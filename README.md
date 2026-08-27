@@ -34,15 +34,15 @@ This keeps image-to-circuit workflows low-latency. An agent can usually build th
 ## Run locally
 
 ```bash
-npm install
-npm run dev
+pnpm install
+pnpm dev
 ```
 
 Production check:
 
 ```bash
-npm run build
-npm run preview
+pnpm build
+pnpm preview
 ```
 
 ## Architecture

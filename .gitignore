@@ -1,6 +1,8 @@
 node_modules/
 dist/
 .chrome-test/
+.pnpm-store/
+pnpm-debug.log*
 *.tsbuildinfo
 ui*.png
 vite.config.js

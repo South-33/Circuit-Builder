@@ -1,4 +1,9 @@
-import { defaultCode, PART_DEFINITIONS } from './parts';
+import { defaultCode, getPartPins, PART_DEFINITIONS } from '../components/parts';
+import { findOpenPlacement } from '../layout/placement';
+import { alignExplicitSeating, seatPartAtHole, snapPartPlacement, type BreadboardAnchor, type SnapMode } from '../breadboard/placement';
+import { endpointPoint } from '../wires/geometry';
+import { normalizeWaypoints } from '../wires/path';
+import { isBreadboardType } from '../breadboard/geometry';
 import type {
   CircuitConnection,
   CircuitDocument,
@@ -7,6 +12,7 @@ import type {
   PartAttrs,
   PartType,
   SimulationState,
+  WirePoint,
 } from './types';
 
 type CircuitSnapshot = Pick<CircuitDocument, 'parts' | 'connections'>;
@@ -16,19 +22,6 @@ const STOPPED: SimulationState = {
   compileOutput: '',
   serialOutput: '',
   error: null,
-};
-
-const PREFIXES: Record<PartType, string> = {
-  'wokwi-arduino-uno': 'uno',
-  breadboard: 'bb',
-  'wokwi-led': 'led',
-  'wokwi-rgb-led': 'rgb',
-  'wokwi-resistor': 'r',
-  'wokwi-pushbutton': 'button',
-  'wokwi-slide-switch': 'switch',
-  'wokwi-potentiometer': 'pot',
-  'wokwi-buzzer': 'buzzer',
-  'wokwi-7segment': 'seg',
 };
 
 function cloneSnapshot(state: CircuitDocument): CircuitSnapshot {
@@ -109,12 +102,13 @@ class CircuitStore {
   }
 
   addPart(type: PartType, left: number, top: number, attrs: PartAttrs = {}) {
-    const id = nextNumericId(this.state.parts.map((part) => part.id), PREFIXES[type]);
+    const id = nextNumericId(this.state.parts.map((part) => part.id), PART_DEFINITIONS[type].idPrefix);
+    const placement = findOpenPlacement(type, this.state.parts, { left, top });
     const part: CircuitPart = {
       id,
       type,
-      left: Math.round(left),
-      top: Math.round(top),
+      left: Math.round(placement.left),
+      top: Math.round(placement.top),
       attrs: { ...PART_DEFINITIONS[type].defaults, ...attrs },
       ...(type === 'wokwi-arduino-uno' ? { code: defaultCode() } : {}),
     };
@@ -122,10 +116,31 @@ class CircuitStore {
     return part;
   }
 
-  movePart(id: string, left: number, top: number, recordHistory = true) {
-    const parts = this.state.parts.map((part) =>
-      part.id === id ? { ...part, left: Math.round(left), top: Math.round(top) } : part,
-    );
+  movePart(id: string, left: number, top: number, recordHistory = true, snapMode: SnapMode = 'normal') {
+    const current = this.state.parts.find((part) => part.id === id);
+    if (!current) return;
+    const placement = snapPartPlacement(current, left, top, this.state.parts, snapMode);
+    const moved: CircuitPart = {
+      ...current,
+      left: placement.left,
+      top: placement.top,
+      seating: placement.seating,
+    };
+
+    let parts: CircuitPart[];
+    if (isBreadboardType(current.type)) {
+      const dx = moved.left - current.left;
+      const dy = moved.top - current.top;
+      parts = this.state.parts.map((part) => {
+        if (part.id === id) return moved;
+        if (part.seating?.breadboardId === id) {
+          return { ...part, left: part.left + dx, top: part.top + dy };
+        }
+        return part;
+      });
+    } else {
+      parts = this.state.parts.map((part) => part.id === id ? moved : part);
+    }
     if (recordHistory) this.commit(parts, this.state.connections, id);
     else this.setTransient({ parts, selectedId: id });
   }
@@ -143,7 +158,7 @@ class CircuitStore {
   }
 
   applyParts(
-    incoming: Array<Partial<Omit<CircuitPart, 'type'>> & { type: PartType; id?: string }>,
+    incoming: Array<Partial<Omit<CircuitPart, 'type'>> & { type: PartType; id?: string; seat?: BreadboardAnchor }>,
     removePartIds: string[] = [],
     replace = false,
   ) {
@@ -161,13 +176,21 @@ class CircuitStore {
     for (const candidate of incoming) {
       const existingIndex = candidate.id ? parts.findIndex((part) => part.id === candidate.id) : -1;
       const existing = existingIndex >= 0 ? parts[existingIndex] : undefined;
-      const id = candidate.id || nextNumericId(parts.map((part) => part.id), PREFIXES[candidate.type]);
+      const id = candidate.id || nextNumericId(parts.map((part) => part.id), PART_DEFINITIONS[candidate.type].idPrefix);
       const code = candidate.code ?? existing?.code ?? (candidate.type === 'wokwi-arduino-uno' ? defaultCode() : undefined);
-      const part: CircuitPart = {
+      const hasExplicitPosition = typeof candidate.left === 'number' || typeof candidate.top === 'number';
+      const preferred = {
+        left: candidate.left ?? existing?.left ?? 260,
+        top: candidate.top ?? existing?.top ?? 170,
+      };
+      const placement = existing || hasExplicitPosition
+        ? preferred
+        : findOpenPlacement(candidate.type, parts, preferred);
+      let part: CircuitPart = {
         id,
         type: candidate.type,
-        left: Math.round(candidate.left ?? existing?.left ?? 120),
-        top: Math.round(candidate.top ?? existing?.top ?? 120),
+        left: Math.round(placement.left),
+        top: Math.round(placement.top),
         rotate: candidate.rotate ?? existing?.rotate,
         attrs: {
           ...PART_DEFINITIONS[candidate.type].defaults,
@@ -175,7 +198,21 @@ class CircuitStore {
           ...(candidate.attrs ?? {}),
         },
         ...(code !== undefined ? { code } : {}),
+        ...(candidate.seating !== undefined
+          ? { seating: structuredClone(candidate.seating) }
+          : existing?.seating !== undefined
+            ? { seating: structuredClone(existing.seating) }
+            : {}),
       };
+
+      if (candidate.seat !== undefined && candidate.seating !== undefined) {
+        throw new Error(`Cannot seat ${part.id}: use either seat or seating, not both.`);
+      }
+      if (candidate.seat !== undefined) {
+        part = seatPartAtHole(part, [...parts, part], candidate.seat);
+      } else if (candidate.seating !== undefined) {
+        part = alignExplicitSeating(part, [...parts, part]);
+      }
 
       if (existingIndex >= 0) parts[existingIndex] = part;
       else parts = [...parts, part];
@@ -187,14 +224,21 @@ class CircuitStore {
   }
 
   removePart(id: string) {
-    const parts = this.state.parts.filter((part) => part.id !== id);
+    const parts = this.state.parts
+      .filter((part) => part.id !== id)
+      .map((part) => part.seating?.breadboardId === id ? { ...part, seating: undefined } : part);
     const connections = this.state.connections.filter(
       (connection) => !connection.from.startsWith(`${id}:`) && !connection.to.startsWith(`${id}:`),
     );
     this.commit(parts, connections, null);
   }
 
-  addConnection(from: string, to: string, color = '#24a35a') {
+  addConnection(
+    from: string,
+    to: string,
+    color = '#24a35a',
+    options: { waypoints?: WirePoint[] } = {},
+  ) {
     const existing = this.state.connections.find(
       (connection) =>
         (connection.from === from && connection.to === to)
@@ -203,7 +247,16 @@ class CircuitStore {
     if (existing) return existing;
 
     const id = nextNumericId(this.state.connections.map((connection) => connection.id), 'wire');
-    const connection: CircuitConnection = { id, from, to, color };
+    const connection: CircuitConnection = { id, from, to, color, waypoints: [] };
+    if (options.waypoints !== undefined) {
+      const start = endpointPoint(from, this.state.parts);
+      const end = endpointPoint(to, this.state.parts);
+      connection.waypoints = start && end
+        ? normalizeWaypoints(start, options.waypoints, end)
+        : structuredClone(options.waypoints);
+    } else {
+      connection.waypoints = [];
+    }
     this.commit(this.state.parts, [...this.state.connections, connection], id);
     return connection;
   }
@@ -217,23 +270,28 @@ class CircuitStore {
     const results: CircuitConnection[] = [];
 
     for (const candidate of incoming) {
-      const duplicate = connections.find(
+      const exactIdIndex = candidate.id ? connections.findIndex((connection) => connection.id === candidate.id) : -1;
+      const duplicateIndex = connections.findIndex(
         (connection) =>
           (connection.from === candidate.from && connection.to === candidate.to)
           || (connection.from === candidate.to && connection.to === candidate.from),
       );
-      if (duplicate) {
-        results.push(duplicate);
-        continue;
-      }
-      const id = candidate.id || nextNumericId(connections.map((connection) => connection.id), 'wire');
+      const existingIndex = exactIdIndex >= 0 ? exactIdIndex : duplicateIndex;
+      const existing = existingIndex >= 0 ? connections[existingIndex] : undefined;
+      const id = existing?.id || candidate.id || nextNumericId(connections.map((connection) => connection.id), 'wire');
       const connection: CircuitConnection = {
         id,
         from: candidate.from,
         to: candidate.to,
-        color: candidate.color || '#24a35a',
+        color: candidate.color || existing?.color || '#24a35a',
+        waypoints: [],
       };
-      connections.push(connection);
+      const requested = candidate.waypoints ?? existing?.waypoints ?? [];
+      const start = endpointPoint(connection.from, this.state.parts);
+      const end = endpointPoint(connection.to, this.state.parts);
+      connection.waypoints = start && end ? normalizeWaypoints(start, requested, end) : structuredClone(requested);
+      if (existingIndex >= 0) connections[existingIndex] = connection;
+      else connections.push(connection);
       results.push(connection);
     }
 
@@ -247,6 +305,35 @@ class CircuitStore {
       this.state.connections.filter((connection) => connection.id !== id),
       null,
     );
+  }
+
+  setConnectionWaypoints(id: string, waypoints: WirePoint[], recordHistory = true) {
+    const existing = this.state.connections.find((connection) => connection.id === id);
+    if (!existing) return;
+    const start = endpointPoint(existing.from, this.state.parts);
+    const end = endpointPoint(existing.to, this.state.parts);
+    const normalized = start && end ? normalizeWaypoints(start, waypoints, end) : structuredClone(waypoints);
+    const connections = this.state.connections.map((connection) =>
+      connection.id === id ? { ...connection, waypoints: normalized } : connection,
+    );
+    if (recordHistory) this.commit(this.state.parts, connections, id);
+    else this.setTransient({ connections, selectedId: id });
+  }
+
+  previewConnectionWaypoints(id: string, waypoints: WirePoint[]) {
+    const connections = this.state.connections.map((connection) =>
+      connection.id === id
+        ? { ...connection, waypoints: structuredClone(waypoints) }
+        : connection,
+    );
+    this.setTransient({ connections, selectedId: id });
+  }
+
+  setConnectionColor(id: string, color: string) {
+    const connections = this.state.connections.map((connection) =>
+      connection.id === id ? { ...connection, color } : connection,
+    );
+    this.commit(this.state.parts, connections, id);
   }
 
   select(id: string | null) {
@@ -273,10 +360,18 @@ class CircuitStore {
   }
 
   replaceDocument(document: Pick<CircuitDocument, 'parts' | 'connections'>) {
+    const rawParts = structuredClone(document.parts);
+    const parts = rawParts.map((part) => part.seating ? alignExplicitSeating(part, rawParts) : part);
+    const connections: CircuitConnection[] = [];
+    for (const rawConnection of structuredClone(document.connections)) {
+      const connection = { ...rawConnection };
+      connection.waypoints = rawConnection.waypoints ?? [];
+      connections.push(connection);
+    }
     this.state = {
       ...this.state,
-      parts: structuredClone(document.parts),
-      connections: structuredClone(document.connections),
+      parts,
+      connections,
       selectedId: null,
       focus: null,
       simulation: { ...STOPPED },

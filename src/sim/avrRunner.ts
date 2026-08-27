@@ -8,6 +8,7 @@ import {
   AVRIOPort,
   AVRTimer,
   AVRUSART,
+  AVRTWI,
   CPU,
   portBConfig,
   portCConfig,
@@ -15,6 +16,7 @@ import {
   timer0Config,
   timer1Config,
   timer2Config,
+  twiConfig,
   usart0Config,
 } from 'avr8js';
 import { loadHex } from './intelhex';
@@ -33,6 +35,7 @@ export class AVRRunner {
   readonly portD: AVRIOPort;
   readonly adc: AVRADC;
   readonly usart: AVRUSART;
+  readonly twi: AVRTWI;
   readonly frequency = FREQUENCY_HZ;
 
   private animationFrame: number | null = null;
@@ -50,20 +53,26 @@ export class AVRRunner {
     this.portD = new AVRIOPort(this.cpu, portDConfig);
     this.adc = new AVRADC(this.cpu, adcConfig);
     this.usart = new AVRUSART(this.cpu, usart0Config, FREQUENCY_HZ);
+    this.twi = new AVRTWI(this.cpu, twiConfig, FREQUENCY_HZ);
   }
 
   start(onFrame?: () => void) {
     this.stopped = false;
 
-    // Run the MCU in bounded chunks and yield back to the browser between
-    // chunks. Trying to catch up to a full 16 MHz in one animation frame can
-    // starve React and make the editor look frozen even while the AVR runs.
+    // Run the MCU in short wall-clock slices and yield between them. A fixed
+    // instruction/cycle chunk can become a long task when the simulated
+    // program exercises expensive peripherals, which makes dragging and the
+    // editor feel delayed even though the AVR is still making progress.
     const runChunk = () => {
       if (this.stopped) return;
-      const deadline = this.cpu.cycles + 100_000;
-      while (this.cpu.cycles < deadline) {
+      const maxCycles = this.cpu.cycles + 90_000;
+      const wallDeadline = performance.now() + 2.5;
+      let instructions = 0;
+      while (this.cpu.cycles < maxCycles) {
         avrInstruction(this.cpu);
         this.cpu.tick();
+        instructions++;
+        if ((instructions & 511) === 0 && performance.now() >= wallDeadline) break;
       }
       this.executionTimer = window.setTimeout(runChunk, 0);
     };

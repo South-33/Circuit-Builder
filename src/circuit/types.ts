@@ -1,16 +1,14 @@
-export type PartType =
-  | 'wokwi-arduino-uno'
-  | 'breadboard'
-  | 'wokwi-led'
-  | 'wokwi-rgb-led'
-  | 'wokwi-resistor'
-  | 'wokwi-pushbutton'
-  | 'wokwi-slide-switch'
-  | 'wokwi-potentiometer'
-  | 'wokwi-buzzer'
-  | 'wokwi-7segment';
+import type { PartType } from '../components/partTypes';
+export type { PartType } from '../components/partTypes';
+
 
 export type PartAttrs = Record<string, string | number | boolean>;
+
+export type BreadboardSeating = {
+  breadboardId: string;
+  /** Component pin name -> breadboard hole name. */
+  pins: Record<string, string>;
+};
 
 export type CircuitPart = {
   id: string;
@@ -20,6 +18,12 @@ export type CircuitPart = {
   rotate?: number;
   attrs: PartAttrs;
   code?: string;
+  seating?: BreadboardSeating;
+};
+
+export type WirePoint = {
+  x: number;
+  y: number;
 };
 
 export type CircuitConnection = {
@@ -27,6 +31,8 @@ export type CircuitConnection = {
   from: string;
   to: string;
   color: string;
+  /** User/agent-authored visual bend points. Electrical connectivity is from -> to. */
+  waypoints?: WirePoint[];
 };
 
 export type Diagnostic = {

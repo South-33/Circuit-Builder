@@ -1,0 +1,800 @@
+import { PART_TYPES } from './partTypes';
+import type { CircuitPart, PartAttrs, PartType, PinInfo } from '../circuit/types';
+import {
+  BREADBOARD_HEIGHT,
+  BREADBOARD_WIDTH,
+  getBreadboardGeometry,
+} from '../breadboard/geometry';
+
+const DC_MOTOR_PINS: readonly PinInfo[] = [
+  // Fritzing's flexible motor leads terminate at the left edge of the
+  // breadboard artwork. Coordinates are converted from its 120.132x55.721
+  // SVG viewBox into CSS pixels at 96dpi.
+  { name: '1', x: 0, y: 34.10, signals: [] },
+  { name: '2', x: 0, y: 44.08, signals: [] },
+];
+
+const FRITZING_SCALE = 4 / 3;
+const NPN_TRANSISTOR_PINS: readonly PinInfo[] = [
+  { name: 'E', x: 1.08 * FRITZING_SCALE, y: 22.581 * FRITZING_SCALE, description: 'Emitter', signals: [] },
+  { name: 'B', x: 8.261 * FRITZING_SCALE, y: 22.581 * FRITZING_SCALE, description: 'Base', signals: [] },
+  { name: 'C', x: 15.447 * FRITZING_SCALE, y: 22.581 * FRITZING_SCALE, description: 'Collector', signals: [] },
+];
+const RECTIFIER_DIODE_PINS: readonly PinInfo[] = [
+  { name: 'C', x: 0.511 * FRITZING_SCALE, y: 3.594 * FRITZING_SCALE, description: 'Cathode', signals: [] },
+  { name: 'A', x: 29.371 * FRITZING_SCALE, y: 3.708 * FRITZING_SCALE, description: 'Anode', signals: [] },
+];
+const BATTERY_9V_PINS: readonly PinInfo[] = [
+  { name: '-', x: 95.628 * FRITZING_SCALE, y: 17.657 * FRITZING_SCALE, description: 'Negative terminal', signals: [{ type: 'power', voltage: 0 }] },
+  { name: '+', x: 95.628 * FRITZING_SCALE, y: 10.458 * FRITZING_SCALE, description: 'Positive terminal', signals: [{ type: 'power', voltage: 9 }] },
+];
+
+export type PartDefinition = {
+  type: PartType;
+  name: string;
+  idPrefix: string;
+  category: PartCategory;
+  tag?: string;
+  asset?: string;
+  defaults: PartAttrs;
+  previewScale: number;
+  renderScale: number;
+  naturalSize: { width: number; height: number };
+  simulated: boolean;
+  pinSummary: string;
+  breadboardMount?: boolean;
+  keywords?: string[];
+  properties?: PartPropertyDefinition[];
+};
+
+export type PartCategory = 'Boards' | 'Layout' | 'Basic' | 'Input' | 'Output' | 'Motion' | 'Sensors';
+
+export type PartPropertyDefinition = {
+  key: string;
+  label: string;
+  kind: 'number' | 'range' | 'select' | 'toggle';
+  min?: number;
+  max?: number;
+  step?: number;
+  unit?: string;
+  options?: Array<{ value: string | number | boolean; label: string }>;
+};
+
+export const PART_DEFINITIONS: Record<PartType, PartDefinition> = {
+  'wokwi-arduino-uno': {
+    type: 'wokwi-arduino-uno',
+    name: 'Arduino Uno',
+    idPrefix: 'uno',
+    category: 'Boards',
+    tag: 'wokwi-arduino-uno',
+    defaults: {},
+    previewScale: 0.42,
+    renderScale: 1.08,
+    naturalSize: { width: 274, height: 202 },
+    simulated: true,
+    pinSummary: 'Digital 0-13, analog A0-A5, 5V, 3.3V, GND.1-GND.3, VIN, RESET',
+  },
+  breadboard: {
+    type: 'breadboard',
+    name: 'Breadboard',
+    idPrefix: 'bb',
+    category: 'Layout',
+    defaults: {},
+    previewScale: 0.13,
+    renderScale: 1,
+    naturalSize: { width: BREADBOARD_WIDTH, height: BREADBOARD_HEIGHT },
+    simulated: true,
+    pinSummary: 'Rows A-E and F-J, columns 1-63. Rails: +top1..50, -top1..50, +bottom1..50, -bottom1..50',
+  },
+  'breadboard-half': {
+    type: 'breadboard-half',
+    name: 'Half Breadboard',
+    idPrefix: 'bb',
+    category: 'Layout',
+    defaults: {},
+    previewScale: 0.22,
+    renderScale: 1,
+    naturalSize: {
+      width: 245.037 * (4 / 3),
+      height: BREADBOARD_HEIGHT,
+    },
+    simulated: true,
+    pinSummary: 'Rows A-E and F-J, columns 1-30. Rails: +top1..25, -top1..25, +bottom1..25, -bottom1..25',
+  },
+  'wokwi-led': {
+    type: 'wokwi-led',
+    name: 'LED',
+    idPrefix: 'led',
+    category: 'Output',
+    tag: 'wokwi-led',
+    defaults: { color: 'red' },
+    previewScale: 1.25,
+    renderScale: 1,
+    naturalSize: { width: 40, height: 50 },
+    simulated: true,
+    pinSummary: 'A = anode, C = cathode',
+    breadboardMount: true,
+    properties: [{
+      key: 'color', label: 'Color', kind: 'select', options: [
+        { value: 'red', label: 'Red' }, { value: 'green', label: 'Green' },
+        { value: 'blue', label: 'Blue' }, { value: 'yellow', label: 'Yellow' },
+        { value: 'orange', label: 'Orange' }, { value: 'white', label: 'White' },
+      ],
+    }],
+  },
+  'wokwi-rgb-led': {
+    type: 'wokwi-rgb-led',
+    name: 'RGB LED',
+    idPrefix: 'rgb',
+    category: 'Output',
+    tag: 'wokwi-rgb-led',
+    defaults: { common: 'cathode' },
+    previewScale: 1.05,
+    renderScale: 1,
+    naturalSize: { width: 43, height: 73 },
+    simulated: true,
+    pinSummary: 'R, G, B and COM',
+    breadboardMount: true,
+    properties: [{
+      key: 'common', label: 'Common', kind: 'select', options: [
+        { value: 'cathode', label: 'Cathode' }, { value: 'anode', label: 'Anode' },
+      ],
+    }],
+  },
+  'wokwi-resistor': {
+    type: 'wokwi-resistor',
+    name: 'Resistor',
+    idPrefix: 'r',
+    category: 'Basic',
+    tag: 'wokwi-resistor',
+    defaults: { value: '220' },
+    previewScale: 1.25,
+    renderScale: 1,
+    naturalSize: { width: 59, height: 13 },
+    simulated: true,
+    pinSummary: 'Pins 1 and 2',
+    breadboardMount: true,
+    properties: [{ key: 'value', label: 'Resistance', kind: 'number', min: 1, max: 10_000_000, step: 1, unit: 'ohm' }],
+  },
+  'npn-transistor': {
+    type: 'npn-transistor',
+    name: 'NPN Transistor',
+    idPrefix: 'q',
+    category: 'Basic',
+    asset: '/assets/fritzing/npn-transistor.svg',
+    defaults: {},
+    previewScale: 1.55,
+    renderScale: 1,
+    naturalSize: { width: 16.527 * FRITZING_SCALE, height: 24.081 * FRITZING_SCALE },
+    simulated: false,
+    pinSummary: 'E = emitter, B = base, C = collector.',
+    breadboardMount: true,
+    keywords: ['transistor', 'npn', 'bjt', 'switch', '2n2222'],
+  },
+  'rectifier-diode': {
+    type: 'rectifier-diode',
+    name: 'Rectifier Diode',
+    idPrefix: 'd',
+    category: 'Basic',
+    asset: '/assets/fritzing/rectifier-diode.svg',
+    defaults: {},
+    previewScale: 1.35,
+    renderScale: 1,
+    naturalSize: { width: 29.879 * FRITZING_SCALE, height: 7.2 * FRITZING_SCALE },
+    simulated: false,
+    pinSummary: 'A = anode, C = cathode. Useful as a flyback diode across inductive loads.',
+    breadboardMount: true,
+    keywords: ['diode', 'rectifier', '1n4001', 'flyback'],
+  },
+  'battery-9v': {
+    type: 'battery-9v',
+    name: '9V Battery',
+    idPrefix: 'bat',
+    category: 'Basic',
+    asset: '/assets/fritzing/battery-9v.svg',
+    defaults: { voltage: 9 },
+    previewScale: 0.24,
+    renderScale: 1,
+    naturalSize: { width: 95.269 * FRITZING_SCALE, height: 151.872 * FRITZING_SCALE },
+    simulated: false,
+    pinSummary: '+ = positive supply, - = negative/return.',
+    keywords: ['battery', '9v', 'power', 'supply'],
+    properties: [{ key: 'voltage', label: 'Voltage', kind: 'number', min: 1, max: 12, step: 0.1, unit: 'V' }],
+  },
+  'wokwi-pushbutton': {
+    type: 'wokwi-pushbutton',
+    name: 'Pushbutton',
+    idPrefix: 'button',
+    category: 'Input',
+    tag: 'wokwi-pushbutton',
+    defaults: { color: 'red' },
+    previewScale: 1.1,
+    renderScale: 1,
+    naturalSize: { width: 68, height: 48 },
+    simulated: true,
+    pinSummary: '1.l and 1.r are one side. 2.l and 2.r are the other side.',
+    breadboardMount: true,
+  },
+  'wokwi-slide-switch': {
+    type: 'wokwi-slide-switch',
+    name: 'Slide Switch',
+    idPrefix: 'switch',
+    category: 'Input',
+    tag: 'wokwi-slide-switch',
+    defaults: {},
+    previewScale: 1.1,
+    renderScale: 1,
+    naturalSize: { width: 33, height: 36 },
+    simulated: true,
+    pinSummary: 'Pins 1, 2, 3. Pin 2 is common.',
+    breadboardMount: true,
+  },
+  'wokwi-potentiometer': {
+    type: 'wokwi-potentiometer',
+    name: 'Potentiometer',
+    idPrefix: 'pot',
+    category: 'Input',
+    tag: 'wokwi-potentiometer',
+    defaults: { value: 512 },
+    previewScale: 0.95,
+    renderScale: 0.82,
+    naturalSize: { width: 76, height: 76 },
+    simulated: true,
+    pinSummary: 'VCC, SIG, GND',
+  },
+  'wokwi-buzzer': {
+    type: 'wokwi-buzzer',
+    name: 'Buzzer',
+    idPrefix: 'buzzer',
+    category: 'Output',
+    tag: 'wokwi-buzzer',
+    defaults: {},
+    previewScale: 0.9,
+    renderScale: 1,
+    naturalSize: { width: 65, height: 86 },
+    simulated: true,
+    pinSummary: 'Pins 1 and 2',
+    breadboardMount: true,
+  },
+  'wokwi-7segment': {
+    type: 'wokwi-7segment',
+    name: '7-Segment',
+    idPrefix: 'seg',
+    category: 'Output',
+    tag: 'wokwi-7segment',
+    defaults: { color: 'red' },
+    previewScale: 0.8,
+    renderScale: 1,
+    naturalSize: { width: 54, height: 76 },
+    simulated: true,
+    pinSummary: 'Segments A-G, DP and common pins COM.1/COM.2',
+    breadboardMount: true,
+  },
+  'wokwi-pushbutton-6mm': {
+    type: 'wokwi-pushbutton-6mm',
+    name: '6mm Pushbutton',
+    idPrefix: 'button',
+    category: 'Input',
+    tag: 'wokwi-pushbutton-6mm',
+    defaults: { color: 'red' },
+    previewScale: 1.7,
+    renderScale: 1,
+    naturalSize: { width: 28.02, height: 25.68 },
+    simulated: true,
+    pinSummary: '1.l and 1.r are one side. 2.l and 2.r are the other side.',
+    breadboardMount: true,
+    keywords: ['button', 'tactile', 'momentary'],
+  },
+  'wokwi-slide-potentiometer': {
+    type: 'wokwi-slide-potentiometer',
+    name: 'Slide Potentiometer',
+    idPrefix: 'slider',
+    category: 'Input',
+    tag: 'wokwi-slide-potentiometer',
+    defaults: { value: 50, min: 0, max: 100 },
+    previewScale: 0.28,
+    renderScale: 0.65,
+    naturalSize: { width: 207.86, height: 113.6 },
+    simulated: true,
+    pinSummary: 'VCC, SIG, GND',
+    keywords: ['slider', 'analog', 'fader'],
+  },
+  'wokwi-analog-joystick': {
+    type: 'wokwi-analog-joystick',
+    name: 'Analog Joystick',
+    idPrefix: 'joystick',
+    category: 'Input',
+    tag: 'wokwi-analog-joystick',
+    defaults: {},
+    previewScale: 0.46,
+    renderScale: 1,
+    naturalSize: { width: 102.8, height: 124.2 },
+    simulated: true,
+    pinSummary: 'VCC, VERT, HORZ, SEL, GND',
+    breadboardMount: true,
+    keywords: ['joystick', 'thumbstick', 'analog'],
+  },
+  'wokwi-ky-040': {
+    type: 'wokwi-ky-040',
+    name: 'Rotary Encoder',
+    idPrefix: 'encoder',
+    category: 'Input',
+    tag: 'wokwi-ky-040',
+    defaults: {},
+    previewScale: 0.48,
+    renderScale: 1,
+    naturalSize: { width: 116.46, height: 74.42 },
+    simulated: true,
+    pinSummary: 'CLK, DT, SW, VCC, GND',
+    breadboardMount: true,
+    keywords: ['encoder', 'rotary', 'knob', 'ky040'],
+  },
+  'wokwi-tilt-switch': {
+    type: 'wokwi-tilt-switch',
+    name: 'Tilt Sensor',
+    idPrefix: 'tilt',
+    category: 'Sensors',
+    tag: 'wokwi-tilt-switch',
+    defaults: { tilted: false },
+    previewScale: 0.64,
+    renderScale: 1,
+    naturalSize: { width: 88.44, height: 59.55 },
+    simulated: true,
+    pinSummary: 'GND, VCC, OUT',
+    breadboardMount: true,
+    properties: [{ key: 'tilted', label: 'Tilted', kind: 'toggle' }],
+  },
+  'wokwi-dip-switch-8': {
+    type: 'wokwi-dip-switch-8',
+    name: '8-way DIP Switch',
+    idPrefix: 'dip',
+    category: 'Input',
+    tag: 'wokwi-dip-switch-8',
+    defaults: {},
+    previewScale: 0.68,
+    renderScale: 1,
+    naturalSize: { width: 82.86, height: 59.35 },
+    simulated: true,
+    pinSummary: 'Eight independent switches: 1a-8a paired with 1b-8b.',
+    breadboardMount: true,
+    keywords: ['dip', 'switch bank'],
+  },
+  'wokwi-led-bar-graph': {
+    type: 'wokwi-led-bar-graph',
+    name: 'LED Bar Graph',
+    idPrefix: 'bar',
+    category: 'Output',
+    tag: 'wokwi-led-bar-graph',
+    defaults: { color: 'red' },
+    previewScale: 0.5,
+    renderScale: 1,
+    naturalSize: { width: 38.18, height: 100.38 },
+    simulated: true,
+    pinSummary: 'A1-A10 anodes and C1-C10 cathodes.',
+    breadboardMount: true,
+    keywords: ['bargraph', '10 segment', 'display'],
+  },
+  'wokwi-servo': {
+    type: 'wokwi-servo',
+    name: 'Servo',
+    idPrefix: 'servo',
+    category: 'Motion',
+    tag: 'wokwi-servo',
+    defaults: { horn: 'single' },
+    previewScale: 0.32,
+    renderScale: 0.72,
+    naturalSize: { width: 170.08, height: 123.54 },
+    simulated: true,
+    pinSummary: 'GND, V+, PWM',
+    properties: [{
+      key: 'horn', label: 'Horn', kind: 'select', options: [
+        { value: 'single', label: 'Single' }, { value: 'double', label: 'Double' }, { value: 'cross', label: 'Cross' },
+      ],
+    }],
+  },
+  'wokwi-stepper-motor': {
+    type: 'wokwi-stepper-motor',
+    name: 'Stepper Motor',
+    idPrefix: 'stepper',
+    category: 'Motion',
+    tag: 'wokwi-stepper-motor',
+    defaults: { stepsPerRevolution: 200 },
+    previewScale: 0.23,
+    renderScale: 0.52,
+    naturalSize: { width: 220.35, height: 239.46 },
+    simulated: true,
+    pinSummary: 'A-, A+, B+, B-. Drive through a suitable motor driver in physical builds.',
+    properties: [{ key: 'stepsPerRevolution', label: 'Steps/rev', kind: 'number', min: 4, max: 4096, step: 1 }],
+    keywords: ['stepper', 'motor', 'nema'],
+  },
+  'dc-motor': {
+    type: 'dc-motor',
+    name: 'DC Motor',
+    idPrefix: 'motor',
+    category: 'Motion',
+    defaults: {},
+    previewScale: 0.4,
+    renderScale: 1,
+    naturalSize: { width: 160.18, height: 74.29 },
+    simulated: true,
+    pinSummary: 'Pins 1 and 2. Polarity controls direction; PWM controls average drive.',
+    keywords: ['motor', 'dc motor', 'brushed', 'fan'],
+  },
+  'wokwi-membrane-keypad': {
+    type: 'wokwi-membrane-keypad',
+    name: '4x4 Keypad',
+    idPrefix: 'keypad',
+    category: 'Input',
+    tag: 'wokwi-membrane-keypad',
+    defaults: { columns: '4', connector: true },
+    previewScale: 0.16,
+    renderScale: 0.42,
+    naturalSize: { width: 265.83, height: 344 },
+    simulated: true,
+    pinSummary: 'R1-R4 rows and C1-C4 columns.',
+    properties: [{
+      key: 'columns', label: 'Columns', kind: 'select', options: [
+        { value: '4', label: '4 columns' }, { value: '3', label: '3 columns' },
+      ],
+    }],
+    keywords: ['keypad', 'matrix', 'keyboard'],
+  },
+  'wokwi-ntc-temperature-sensor': {
+    type: 'wokwi-ntc-temperature-sensor',
+    name: 'NTC Temperature',
+    idPrefix: 'ntc',
+    category: 'Sensors',
+    tag: 'wokwi-ntc-temperature-sensor',
+    defaults: { temperature: 24, beta: 3950 },
+    previewScale: 0.38,
+    renderScale: 1,
+    naturalSize: { width: 135.4, height: 75.8 },
+    simulated: true,
+    pinSummary: 'GND, VCC, OUT analog temperature voltage.',
+    breadboardMount: true,
+    properties: [
+      { key: 'temperature', label: 'Temperature', kind: 'number', min: -40, max: 125, step: 0.5, unit: 'C' },
+      { key: 'beta', label: 'Beta', kind: 'number', min: 1000, max: 10000, step: 10 },
+    ],
+    keywords: ['thermistor', 'temperature', 'analog'],
+  },
+  'wokwi-photoresistor-sensor': {
+    type: 'wokwi-photoresistor-sensor',
+    name: 'Photoresistor',
+    idPrefix: 'ldr',
+    category: 'Sensors',
+    tag: 'wokwi-photoresistor-sensor',
+    defaults: { lux: 500, threshold: 2.5, rl10: 50, gamma: 0.7 },
+    previewScale: 0.3,
+    renderScale: 1,
+    naturalSize: { width: 173.66, height: 65.47 },
+    simulated: true,
+    pinSummary: 'VCC, GND, DO threshold output, AO analog light level.',
+    breadboardMount: true,
+    properties: [
+      { key: 'lux', label: 'Light', kind: 'number', min: 0.1, max: 100000, step: 1, unit: 'lux' },
+      { key: 'threshold', label: 'Threshold', kind: 'number', min: 0, max: 5, step: 0.1, unit: 'V' },
+    ],
+    keywords: ['ldr', 'light', 'lux', 'photo sensor'],
+  },
+  'wokwi-pir-motion-sensor': {
+    type: 'wokwi-pir-motion-sensor',
+    name: 'PIR Motion Sensor',
+    idPrefix: 'pir',
+    category: 'Sensors',
+    tag: 'wokwi-pir-motion-sensor',
+    defaults: { motion: false, delayTime: 5, inhibitTime: 1.2, retrigger: true },
+    previewScale: 0.47,
+    renderScale: 1,
+    naturalSize: { width: 90.71, height: 96.4 },
+    simulated: true,
+    pinSummary: 'VCC, OUT, GND.',
+    breadboardMount: true,
+    properties: [
+      { key: 'motion', label: 'Motion', kind: 'toggle' },
+      { key: 'delayTime', label: 'Hold', kind: 'number', min: 0.1, max: 30, step: 0.1, unit: 's' },
+    ],
+    keywords: ['motion', 'pir', 'presence'],
+  },
+  'wokwi-flame-sensor': {
+    type: 'wokwi-flame-sensor',
+    name: 'Flame Sensor',
+    idPrefix: 'flame',
+    category: 'Sensors',
+    tag: 'wokwi-flame-sensor',
+    defaults: { level: 0, threshold: 2.5 },
+    previewScale: 0.26,
+    renderScale: 1,
+    naturalSize: { width: 199.94, height: 65.47 },
+    simulated: true,
+    pinSummary: 'VCC, GND, DOUT, AOUT.',
+    breadboardMount: true,
+    properties: [
+      { key: 'level', label: 'Flame', kind: 'number', min: 0, max: 100, step: 1, unit: '%' },
+      { key: 'threshold', label: 'Threshold', kind: 'number', min: 0, max: 5, step: 0.1, unit: 'V' },
+    ],
+    keywords: ['fire', 'infrared', 'flame'],
+  },
+  'wokwi-gas-sensor': {
+    type: 'wokwi-gas-sensor',
+    name: 'MQ2 Gas Sensor',
+    idPrefix: 'gas',
+    category: 'Sensors',
+    tag: 'wokwi-gas-sensor',
+    defaults: { ppm: 400, threshold: 4.4 },
+    previewScale: 0.36,
+    renderScale: 1,
+    naturalSize: { width: 136.94, height: 66.8 },
+    simulated: true,
+    pinSummary: 'AOUT, DOUT, GND, VCC.',
+    breadboardMount: true,
+    properties: [
+      { key: 'ppm', label: 'Gas', kind: 'number', min: 0, max: 10000, step: 10, unit: 'ppm' },
+      { key: 'threshold', label: 'Threshold', kind: 'number', min: 0, max: 5, step: 0.1, unit: 'V' },
+    ],
+    keywords: ['mq2', 'gas', 'smoke'],
+  },
+  'wokwi-big-sound-sensor': {
+    type: 'wokwi-big-sound-sensor',
+    name: 'Sound Sensor',
+    idPrefix: 'sound',
+    category: 'Sensors',
+    tag: 'wokwi-big-sound-sensor',
+    defaults: { level: 0, threshold: 2.5 },
+    previewScale: 0.36,
+    renderScale: 1,
+    naturalSize: { width: 140.05, height: 54.44 },
+    simulated: true,
+    pinSummary: 'AOUT, GND, VCC, DOUT.',
+    breadboardMount: true,
+    properties: [
+      { key: 'level', label: 'Sound', kind: 'number', min: 0, max: 100, step: 1, unit: '%' },
+      { key: 'threshold', label: 'Threshold', kind: 'number', min: 0, max: 5, step: 0.1, unit: 'V' },
+    ],
+    keywords: ['microphone', 'sound', 'noise'],
+  },
+  'wokwi-small-sound-sensor': {
+    type: 'wokwi-small-sound-sensor',
+    name: 'Small Sound Sensor',
+    idPrefix: 'sound',
+    category: 'Sensors',
+    tag: 'wokwi-small-sound-sensor',
+    defaults: { level: 0, threshold: 2.5 },
+    previewScale: 0.38,
+    renderScale: 1,
+    naturalSize: { width: 133.08, height: 54.44 },
+    simulated: true,
+    pinSummary: 'AOUT, GND, VCC, DOUT.',
+    breadboardMount: true,
+    properties: [
+      { key: 'level', label: 'Sound', kind: 'number', min: 0, max: 100, step: 1, unit: '%' },
+      { key: 'threshold', label: 'Threshold', kind: 'number', min: 0, max: 5, step: 0.1, unit: 'V' },
+    ],
+    keywords: ['microphone', 'sound', 'noise'],
+  },
+  'wokwi-heart-beat-sensor': {
+    type: 'wokwi-heart-beat-sensor',
+    name: 'Pulse Sensor',
+    idPrefix: 'pulse',
+    category: 'Sensors',
+    tag: 'wokwi-heart-beat-sensor',
+    defaults: { bpm: 72 },
+    previewScale: 0.55,
+    renderScale: 1,
+    naturalSize: { width: 88.44, height: 83.15 },
+    simulated: true,
+    pinSummary: 'GND, VCC, OUT analog pulse waveform.',
+    breadboardMount: true,
+    properties: [{ key: 'bpm', label: 'Heart rate', kind: 'number', min: 30, max: 220, step: 1, unit: 'bpm' }],
+    keywords: ['heart', 'pulse', 'heartbeat'],
+  },
+  'wokwi-hc-sr04': {
+    type: 'wokwi-hc-sr04',
+    name: 'HC-SR04',
+    idPrefix: 'sonar',
+    category: 'Sensors',
+    tag: 'wokwi-hc-sr04',
+    defaults: { distance: 100 },
+    previewScale: 0.31,
+    renderScale: 1,
+    naturalSize: { width: 170.08, height: 98.49 },
+    simulated: true,
+    pinSummary: 'VCC, TRIG, ECHO, GND. ECHO pulse is distance x 58 microseconds.',
+    breadboardMount: true,
+    properties: [{ key: 'distance', label: 'Distance', kind: 'number', min: 2, max: 400, step: 1, unit: 'cm' }],
+    keywords: ['ultrasonic', 'distance', 'sonar'],
+  },
+  'wokwi-dht22': {
+    type: 'wokwi-dht22',
+    name: 'DHT22',
+    idPrefix: 'dht',
+    category: 'Sensors',
+    tag: 'wokwi-dht22',
+    defaults: { temperature: 24, humidity: 40 },
+    previewScale: 0.42,
+    renderScale: 1,
+    naturalSize: { width: 57.07, height: 120.72 },
+    simulated: true,
+    pinSummary: 'VCC, SDA single-wire data, NC, GND.',
+    breadboardMount: true,
+    properties: [
+      { key: 'temperature', label: 'Temperature', kind: 'number', min: -40, max: 80, step: 0.5, unit: 'C' },
+      { key: 'humidity', label: 'Humidity', kind: 'number', min: 0, max: 100, step: 1, unit: '%' },
+    ],
+    keywords: ['temperature', 'humidity', 'weather'],
+  },
+  'wokwi-ir-receiver': {
+    type: 'wokwi-ir-receiver',
+    name: 'IR Receiver',
+    idPrefix: 'irrx',
+    category: 'Sensors',
+    tag: 'wokwi-ir-receiver',
+    defaults: {},
+    previewScale: 0.5,
+    renderScale: 1,
+    naturalSize: { width: 61.15, height: 92.75 },
+    simulated: true,
+    pinSummary: 'GND, VCC, DAT. Receives NEC commands from an IR Remote in the same bench.',
+    breadboardMount: true,
+    keywords: ['infrared', 'remote', 'nec'],
+  },
+  'wokwi-ir-remote': {
+    type: 'wokwi-ir-remote',
+    name: 'IR Remote',
+    idPrefix: 'irremote',
+    category: 'Input',
+    tag: 'wokwi-ir-remote',
+    defaults: {},
+    previewScale: 0.18,
+    renderScale: 0.72,
+    naturalSize: { width: 151.18, height: 320.16 },
+    simulated: true,
+    pinSummary: 'Wireless NEC remote. No physical pins.',
+    keywords: ['infrared', 'remote', 'nec'],
+  },
+  'wokwi-lcd1602': {
+    type: 'wokwi-lcd1602',
+    name: 'LCD 16x2 I2C',
+    idPrefix: 'lcd',
+    category: 'Output',
+    tag: 'wokwi-lcd1602',
+    defaults: { pins: 'i2c', background: 'blue' },
+    previewScale: 0.22,
+    renderScale: 0.64,
+    naturalSize: { width: 302.5, height: 136.5 },
+    simulated: true,
+    pinSummary: 'GND, VCC, SDA, SCL. I2C address 0x27.',
+    keywords: ['lcd', 'display', 'i2c', '1602'],
+  },
+  'wokwi-lcd2004': {
+    type: 'wokwi-lcd2004',
+    name: 'LCD 20x4 I2C',
+    idPrefix: 'lcd',
+    category: 'Output',
+    tag: 'wokwi-lcd2004',
+    defaults: { pins: 'i2c', background: 'blue' },
+    previewScale: 0.18,
+    renderScale: 0.58,
+    naturalSize: { width: 355.5, height: 179.5 },
+    simulated: true,
+    pinSummary: 'GND, VCC, SDA, SCL. I2C address 0x27.',
+    keywords: ['lcd', 'display', 'i2c', '2004'],
+  },
+  'wokwi-ssd1306': {
+    type: 'wokwi-ssd1306',
+    name: 'OLED 128x64',
+    idPrefix: 'oled',
+    category: 'Output',
+    tag: 'wokwi-ssd1306',
+    defaults: {},
+    previewScale: 0.42,
+    renderScale: 0.78,
+    naturalSize: { width: 150, height: 116 },
+    simulated: true,
+    pinSummary: 'DATA/SDA, CLK/SCL, power and control pins. I2C address 0x3C.',
+    keywords: ['oled', 'display', 'i2c', 'ssd1306'],
+  },
+  'wokwi-ds1307': {
+    type: 'wokwi-ds1307',
+    name: 'DS1307 RTC',
+    idPrefix: 'rtc',
+    category: 'Sensors',
+    tag: 'wokwi-ds1307',
+    defaults: {},
+    previewScale: 0.58,
+    renderScale: 0.9,
+    naturalSize: { width: 97.5, height: 84 },
+    simulated: true,
+    pinSummary: 'GND, 5V, SDA, SCL, SQW. I2C address 0x68.',
+    keywords: ['rtc', 'clock', 'time', 'i2c'],
+  },
+  'wokwi-mpu6050': {
+    type: 'wokwi-mpu6050',
+    name: 'MPU6050 IMU',
+    idPrefix: 'imu',
+    category: 'Sensors',
+    tag: 'wokwi-mpu6050',
+    defaults: { accelX: 0, accelY: 0, accelZ: 1, gyroX: 0, gyroY: 0, gyroZ: 0, temperature: 24 },
+    previewScale: 0.62,
+    renderScale: 1,
+    naturalSize: { width: 81.6, height: 61.2 },
+    simulated: true,
+    pinSummary: 'SDA, SCL, VCC, GND, INT and auxiliary pins. I2C address 0x68.',
+    keywords: ['imu', 'accelerometer', 'gyro', 'i2c'],
+  },
+};
+
+export const PART_ORDER: PartType[] = [...PART_TYPES];
+
+type PinElement = HTMLElement & { pinInfo?: PinInfo[] };
+
+export function getPartPins(partOrType: CircuitPart | PartType): PinInfo[] {
+  const type = typeof partOrType === 'string' ? partOrType : partOrType.type;
+  const breadboard = getBreadboardGeometry(type);
+  if (breadboard) return [...breadboard.pins];
+  if (type === 'dc-motor') return [...DC_MOTOR_PINS];
+  if (type === 'npn-transistor') return [...NPN_TRANSISTOR_PINS];
+  if (type === 'rectifier-diode') return [...RECTIFIER_DIODE_PINS];
+  if (type === 'battery-9v') return [...BATTERY_9V_PINS];
+  const tag = PART_DEFINITIONS[type].tag;
+  if (!tag || typeof document === 'undefined') return [];
+  const element = document.createElement(tag) as PinElement & Record<string, unknown>;
+  if (typeof partOrType !== 'string') {
+    for (const [key, value] of Object.entries(partOrType.attrs)) element[key] = value;
+  }
+  return Array.isArray(element.pinInfo) ? element.pinInfo : [];
+}
+
+export function getPartBounds(partOrType: CircuitPart | PartType) {
+  const type = typeof partOrType === 'string' ? partOrType : partOrType.type;
+  const definition = PART_DEFINITIONS[type];
+  return {
+    width: definition.naturalSize.width * definition.renderScale,
+    height: definition.naturalSize.height * definition.renderScale,
+  };
+}
+
+function normalizePinName(name: string) {
+  return name.trim().toLowerCase().replace(/^gpio\s*/, '').replace(/^digital\s*/, '');
+}
+
+export function resolvePinName(part: CircuitPart, requested: string): string | null {
+  const pins = getPartPins(part);
+  const raw = requested.trim();
+  const normalized = normalizePinName(raw);
+
+  const exact = pins.find((pin) => pin.name === raw);
+  if (exact) return exact.name;
+  const caseInsensitive = pins.find((pin) => pin.name.toLowerCase() === raw.toLowerCase());
+  if (caseInsensitive) return caseInsensitive.name;
+
+  if (part.type === 'wokwi-arduino-uno') {
+    const digital = normalized.match(/^d?(\d+)$/)?.[1];
+    if (digital) {
+      const found = pins.find((pin) => pin.name === digital);
+      if (found) return found.name;
+    }
+    if (normalized === 'gnd' || normalized === 'ground') {
+      return pins.find((pin) => pin.name.startsWith('GND'))?.name ?? null;
+    }
+    if (normalized === '3v3' || normalized === '3.3v') {
+      return pins.find((pin) => pin.name === '3.3V')?.name ?? null;
+    }
+  }
+
+  return null;
+}
+
+export function defaultCode(): string {
+  return `void setup() {
+  pinMode(13, OUTPUT);
+}
+
+void loop() {
+  digitalWrite(13, HIGH);
+  delay(500);
+  digitalWrite(13, LOW);
+  delay(500);
+}
+`;
+}

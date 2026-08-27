@@ -1,9 +1,10 @@
-import type { CircuitConnection, CircuitDocument, CircuitPart } from '../types';
+import type { CircuitConnection, CircuitDocument, CircuitPart } from '../circuit/types';
+import { getBreadboardGeometry, isBreadboardType } from '../breadboard/geometry';
 import { classifyArduinoPowerPin } from './pins';
 
 export type GraphEdge = {
   to: string;
-  kind: 'wire' | 'breadboard' | 'resistor';
+  kind: 'wire' | 'breadboard' | 'seat' | 'resistor';
   itemId?: string;
 };
 
@@ -53,7 +54,9 @@ function connect(
 
 function addBreadboardEdges(graph: CircuitGraph, breadboard: CircuitPart) {
   const id = breadboard.id;
-  for (let column = 1; column <= 30; column++) {
+  const geometry = getBreadboardGeometry(breadboard.type);
+  if (!geometry) return;
+  for (let column = 1; column <= geometry.columns; column++) {
     const left = ['A', 'B', 'C', 'D', 'E'].map((row) => nodeRef(id, `${row}${column}`));
     const right = ['F', 'G', 'H', 'I', 'J'].map((row) => nodeRef(id, `${row}${column}`));
     for (let index = 1; index < left.length; index++) connect(graph, left[0], left[index], 'breadboard', id);
@@ -62,7 +65,7 @@ function addBreadboardEdges(graph: CircuitGraph, breadboard: CircuitPart) {
 
   for (const rail of ['+top', '-top', '+bottom', '-bottom']) {
     const first = nodeRef(id, `${rail}1`);
-    for (let column = 2; column <= 30; column++) {
+    for (let column = 2; column <= geometry.railHoles; column++) {
       connect(graph, first, nodeRef(id, `${rail}${column}`), 'breadboard', id);
     }
   }
@@ -80,8 +83,13 @@ export function buildCircuitGraph(document: Pick<CircuitDocument, 'parts' | 'con
   }
 
   for (const part of document.parts) {
-    if (part.type === 'breadboard') addBreadboardEdges(graph, part);
+    if (isBreadboardType(part.type)) addBreadboardEdges(graph, part);
     if (part.type === 'wokwi-resistor') connect(graph, nodeRef(part.id, '1'), nodeRef(part.id, '2'), 'resistor', part.id);
+    if (part.seating) {
+      for (const [pin, hole] of Object.entries(part.seating.pins)) {
+        connect(graph, nodeRef(part.id, pin), nodeRef(part.seating.breadboardId, hole), 'seat', part.id);
+      }
+    }
   }
 
   return graph;

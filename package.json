@@ -11,6 +11,9 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "check:repo": "node scripts/check-repo.mjs",
+    "typecheck": "tsc --noEmit",
+    "check": "pnpm check:repo && pnpm build",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview"
   },

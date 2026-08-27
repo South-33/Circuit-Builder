@@ -1,4 +1,4 @@
-import type { CircuitDocument, Diagnostic } from '../types';
+import type { CircuitDocument, Diagnostic } from '../circuit/types';
 import { buildCircuitGraph, directlyConnectedNodes, nodeRef, parseNodeRef, traceToArduinoPin, traceToPower } from './circuitGraph';
 import { classifyArduinoPowerPin } from './pins';
 

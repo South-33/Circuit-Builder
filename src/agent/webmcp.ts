@@ -520,6 +520,14 @@ export async function registerWebMCPTools() {
     },
   ];
 
+  const findTool = (name: string) =>
+    tools.find(
+      (t) =>
+        t.name === name ||
+        t.name.replace(/-/g, '_') === name ||
+        t.name.replace(/_/g, '-') === name,
+    );
+
   // 1. Expose universal browser agent discovery & execution functions on window
   if (typeof window !== 'undefined') {
     window.__webmcp_tools__ = tools;
@@ -530,7 +538,7 @@ export async function registerWebMCPTools() {
         inputSchema: t.inputSchema,
       }));
     window.webmcp_call_tool = async (name: string, input: Record<string, unknown> = {}) => {
-      const tool = tools.find((t) => t.name === name);
+      const tool = findTool(name);
       if (!tool) throw new Error(`WebMCP tool "${name}" not found.`);
       return tool.execute(input, options);
     };
@@ -558,7 +566,10 @@ export async function registerWebMCPTools() {
 
   // 4. Polyfill ModelContext on document, window, and navigator according to WebMCP spec
   const registered = new Map<string, ToolDefinition>();
-  for (const tool of tools) registered.set(tool.name, tool);
+  for (const tool of tools) {
+    registered.set(tool.name, tool);
+    registered.set(tool.name.replace(/-/g, '_'), tool);
+  }
 
   const polyfillModelContext: ModelContext & {
     listTools: () => Promise<Array<{ name: string; description: string; inputSchema?: Record<string, unknown> }>>;
@@ -566,26 +577,27 @@ export async function registerWebMCPTools() {
   } = {
     registerTool: async (tool: ToolDefinition) => {
       registered.set(tool.name, tool);
+      registered.set(tool.name.replace(/-/g, '_'), tool);
     },
     getTools: async () =>
-      Array.from(registered.values()).map((t) => ({
+      Array.from(tools.values()).map((t) => ({
         name: t.name,
         description: t.description,
         inputSchema: t.inputSchema,
       })),
     listTools: async () =>
-      Array.from(registered.values()).map((t) => ({
+      Array.from(tools.values()).map((t) => ({
         name: t.name,
         description: t.description,
         inputSchema: t.inputSchema,
       })),
     executeTool: async (name: string, input: Record<string, unknown> = {}) => {
-      const tool = registered.get(name);
+      const tool = registered.get(name) || findTool(name);
       if (!tool) throw new Error(`Tool "${name}" not registered.`);
       return tool.execute(input, options);
     },
     callTool: async (name: string, input: Record<string, unknown> = {}) => {
-      const tool = registered.get(name);
+      const tool = registered.get(name) || findTool(name);
       if (!tool) throw new Error(`Tool "${name}" not registered.`);
       return tool.execute(input, options);
     },

@@ -1,11 +1,19 @@
 import type { CircuitConnection, CircuitDocument, CircuitPart } from '../circuit/types';
 import { getBreadboardGeometry, isBreadboardType } from '../breadboard/geometry';
-import { classifyArduinoPowerPin } from './pins';
+import { classifyArduinoPowerPin, classifyPowerPin } from './pins';
+
+export type DiodeDirection = 'anode-to-cathode' | 'cathode-to-anode';
+
+export type DiodeTraversal = {
+  diodeId: string;
+  direction: DiodeDirection;
+};
 
 export type GraphEdge = {
   to: string;
-  kind: 'wire' | 'breadboard' | 'seat' | 'resistor';
+  kind: 'wire' | 'breadboard' | 'seat' | 'resistor' | 'diode';
   itemId?: string;
+  diodeDirection?: DiodeDirection;
 };
 
 export type TraceResult = {
@@ -13,8 +21,11 @@ export type TraceResult = {
   part: CircuitPart;
   pin: string;
   resistance: number;
+  voltageDrop: number;
   resistorIds: string[];
   connectionIds: string[];
+  diodeIds: string[];
+  diodeTraversals: DiodeTraversal[];
 };
 
 export type CircuitGraph = {
@@ -85,6 +96,12 @@ export function buildCircuitGraph(document: Pick<CircuitDocument, 'parts' | 'con
   for (const part of document.parts) {
     if (isBreadboardType(part.type)) addBreadboardEdges(graph, part);
     if (part.type === 'wokwi-resistor') connect(graph, nodeRef(part.id, '1'), nodeRef(part.id, '2'), 'resistor', part.id);
+    if (part.type === 'rectifier-diode') {
+      const anode = nodeRef(part.id, 'A');
+      const cathode = nodeRef(part.id, 'C');
+      addEdge(graph, anode, { to: cathode, kind: 'diode', itemId: part.id, diodeDirection: 'anode-to-cathode' });
+      addEdge(graph, cathode, { to: anode, kind: 'diode', itemId: part.id, diodeDirection: 'cathode-to-anode' });
+    }
     if (part.seating) {
       for (const [pin, hole] of Object.entries(part.seating.pins)) {
         connect(graph, nodeRef(part.id, pin), nodeRef(part.seating.breadboardId, hole), 'seat', part.id);
@@ -102,6 +119,9 @@ function resistorValue(part: CircuitPart | undefined) {
   return Number.isFinite(value) && value > 0 ? value : 220;
 }
 
+const DIODE_FORWARD_DROP = 0.7;
+const DIODE_FORWARD_RESISTANCE = 0.5;
+
 export function traceFrom(
   graph: CircuitGraph,
   startNode: string,
@@ -112,10 +132,22 @@ export function traceFrom(
     node: string;
     depth: number;
     resistance: number;
+    voltageDrop: number;
     resistorIds: string[];
     connectionIds: string[];
+    diodeIds: string[];
+    diodeTraversals: DiodeTraversal[];
   };
-  const queue: QueueItem[] = [{ node: startNode, depth: 0, resistance: 0, resistorIds: [], connectionIds: [] }];
+  const queue: QueueItem[] = [{
+    node: startNode,
+    depth: 0,
+    resistance: 0,
+    voltageDrop: 0,
+    resistorIds: [],
+    connectionIds: [],
+    diodeIds: [],
+    diodeTraversals: [],
+  }];
   const bestResistance = new Map<string, number>();
   const results: TraceResult[] = [];
 
@@ -135,8 +167,11 @@ export function traceFrom(
           part,
           pin,
           resistance: current.resistance,
+          voltageDrop: current.voltageDrop,
           resistorIds: current.resistorIds,
           connectionIds: current.connectionIds,
+          diodeIds: current.diodeIds,
+          diodeTraversals: current.diodeTraversals,
         });
         continue;
       }
@@ -144,16 +179,28 @@ export function traceFrom(
 
     for (const edge of graph.adjacency.get(current.node) ?? []) {
       const resistor = edge.kind === 'resistor' ? graph.parts.get(edge.itemId ?? '') : undefined;
+      const isDiode = edge.kind === 'diode';
+      const edgeRes = resistor ? resistorValue(resistor) : (isDiode ? DIODE_FORWARD_RESISTANCE : 0);
+      const edgeDrop = isDiode ? DIODE_FORWARD_DROP : 0;
+      const nextTraversals = isDiode && edge.itemId && edge.diodeDirection
+        ? [...current.diodeTraversals, { diodeId: edge.itemId, direction: edge.diodeDirection }]
+        : current.diodeTraversals;
+
       queue.push({
         node: edge.to,
         depth: current.depth + 1,
-        resistance: current.resistance + resistorValue(resistor),
+        resistance: current.resistance + edgeRes,
+        voltageDrop: current.voltageDrop + edgeDrop,
         resistorIds: edge.kind === 'resistor' && edge.itemId
           ? [...current.resistorIds, edge.itemId]
           : current.resistorIds,
         connectionIds: edge.kind === 'wire' && edge.itemId
           ? [...current.connectionIds, edge.itemId]
           : current.connectionIds,
+        diodeIds: isDiode && edge.itemId
+          ? [...current.diodeIds, edge.itemId]
+          : current.diodeIds,
+        diodeTraversals: nextTraversals,
       });
     }
   }
@@ -164,15 +211,34 @@ export function traceFrom(
 export function traceToArduinoPin(graph: CircuitGraph, startNode: string) {
   return traceFrom(graph, startNode, (part, pin) =>
     part.type === 'wokwi-arduino-uno'
-    && classifyArduinoPowerPin(pin) === null
+    && classifyPowerPin(part.type, pin) === null
     && (/^\d+$/.test(pin) || /^A[0-5]$/i.test(pin)),
   );
 }
 
+export function isDiodePathValidForPower(
+  traversals: DiodeTraversal[],
+  powerType: 'pos' | 'gnd',
+): boolean {
+  for (const traversal of traversals) {
+    if (powerType === 'pos' && traversal.direction !== 'cathode-to-anode') return false;
+    if (powerType === 'gnd' && traversal.direction !== 'anode-to-cathode') return false;
+  }
+  return true;
+}
+
 export function traceToPower(graph: CircuitGraph, startNode: string) {
-  return traceFrom(graph, startNode, (part, pin) =>
-    part.type === 'wokwi-arduino-uno' && classifyArduinoPowerPin(pin) !== null,
+  const traces = traceFrom(graph, startNode, (part, pin) =>
+    classifyPowerPin(part.type, pin) !== null,
   );
+
+  return traces.filter((trace) => {
+    if (trace.diodeTraversals.length === 0) return true;
+    const kind = classifyPowerPin(trace.part.type, trace.pin);
+    if (!kind) return false;
+    const powerType = kind === 'gnd' ? 'gnd' : 'pos';
+    return isDiodePathValidForPower(trace.diodeTraversals, powerType);
+  });
 }
 
 export function directlyConnectedNodes(graph: CircuitGraph, startNode: string) {
@@ -183,7 +249,7 @@ export function directlyConnectedNodes(graph: CircuitGraph, startNode: string) {
     if (visited.has(node)) continue;
     visited.add(node);
     for (const edge of graph.adjacency.get(node) ?? []) {
-      if (edge.kind === 'resistor') continue;
+      if (edge.kind === 'resistor' || edge.kind === 'diode') continue;
       if (!visited.has(edge.to)) queue.push(edge.to);
     }
   }

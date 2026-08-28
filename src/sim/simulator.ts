@@ -147,6 +147,16 @@ class SimulatorRuntime {
         boardElement.ledPower = false;
       }
     }
+    const state = circuitStore.getSnapshot();
+    for (const part of state.parts) {
+      if (part.type === 'wokwi-arduino-uno') {
+        const boardElement = getBoardElement(part.id);
+        if (boardElement) {
+          boardElement.led13 = false;
+          boardElement.ledPower = false;
+        }
+      }
+    }
     this.boardId = null;
 
     if (updateStore) circuitStore.setSimulation({ status: 'stopped', error: null });

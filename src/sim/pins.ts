@@ -20,11 +20,36 @@ export function resolveArduinoAnalogChannel(pinName: string): number | null {
   return match ? Number(match[1]) : null;
 }
 
-export function classifyArduinoPowerPin(pinName: string): 'gnd' | '5v' | '3v3' | null {
+export type PowerPinClassification = 'gnd' | '5v' | '3v3' | 'vin' | '9v';
+
+export function classifyPowerPin(partType: string, pinName: string): PowerPinClassification | null {
   const normalized = pinName.trim().toUpperCase();
-  if (normalized.startsWith('GND')) return 'gnd';
-  if (normalized === '5V') return '5v';
-  if (normalized === '3.3V' || normalized === '3V3') return '3v3';
+  if (partType === 'wokwi-arduino-uno') {
+    if (normalized.startsWith('GND')) return 'gnd';
+    if (normalized === '5V') return '5v';
+    if (normalized === '3.3V' || normalized === '3V3') return '3v3';
+    if (normalized === 'VIN') return 'vin';
+    return null;
+  }
+  if (partType === 'battery-9v') {
+    if (normalized === '-' || normalized === 'GND' || normalized === 'NEG' || normalized === 'NEGATIVE') return 'gnd';
+    if (normalized === '+' || normalized === '9V' || normalized === 'POS' || normalized === 'POSITIVE' || normalized === 'VCC') return '9v';
+    return null;
+  }
   return null;
+}
+
+export function isGroundPin(partType: string, pinName: string): boolean {
+  return classifyPowerPin(partType, pinName) === 'gnd';
+}
+
+export function isPositivePowerPin(partType: string, pinName: string): boolean {
+  const classification = classifyPowerPin(partType, pinName);
+  return classification !== null && classification !== 'gnd';
+}
+
+export function classifyArduinoPowerPin(pinName: string): 'gnd' | '5v' | '3v3' | 'vin' | null {
+  const result = classifyPowerPin('wokwi-arduino-uno', pinName);
+  return result === '9v' ? null : result;
 }
 

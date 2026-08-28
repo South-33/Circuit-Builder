@@ -166,7 +166,7 @@ export const PART_DEFINITIONS: Record<PartType, PartDefinition> = {
     previewScale: 1.55,
     renderScale: 1,
     naturalSize: { width: 16.527 * FRITZING_SCALE, height: 24.081 * FRITZING_SCALE },
-    simulated: false,
+    simulated: true,
     pinSummary: 'E = emitter, B = base, C = collector.',
     breadboardMount: true,
     keywords: ['transistor', 'npn', 'bjt', 'switch', '2n2222'],
@@ -181,7 +181,7 @@ export const PART_DEFINITIONS: Record<PartType, PartDefinition> = {
     previewScale: 1.35,
     renderScale: 1,
     naturalSize: { width: 29.879 * FRITZING_SCALE, height: 7.2 * FRITZING_SCALE },
-    simulated: false,
+    simulated: true,
     pinSummary: 'A = anode, C = cathode. Useful as a flyback diode across inductive loads.',
     breadboardMount: true,
     keywords: ['diode', 'rectifier', '1n4001', 'flyback'],
@@ -196,7 +196,7 @@ export const PART_DEFINITIONS: Record<PartType, PartDefinition> = {
     previewScale: 0.24,
     renderScale: 1,
     naturalSize: { width: 95.269 * FRITZING_SCALE, height: 151.872 * FRITZING_SCALE },
-    simulated: false,
+    simulated: true,
     pinSummary: '+ = positive supply, - = negative/return.',
     keywords: ['battery', '9v', 'power', 'supply'],
     properties: [{ key: 'voltage', label: 'Voltage', kind: 'number', min: 1, max: 12, step: 0.1, unit: 'V' }],
@@ -214,6 +214,13 @@ export const PART_DEFINITIONS: Record<PartType, PartDefinition> = {
     simulated: true,
     pinSummary: '1.l and 1.r are one side. 2.l and 2.r are the other side.',
     breadboardMount: true,
+    properties: [{
+      key: 'color', label: 'Color', kind: 'select', options: [
+        { value: 'red', label: 'Red' }, { value: 'green', label: 'Green' },
+        { value: 'blue', label: 'Blue' }, { value: 'yellow', label: 'Yellow' },
+        { value: 'white', label: 'White' }, { value: 'black', label: 'Black' },
+      ],
+    }],
   },
   'wokwi-slide-switch': {
     type: 'wokwi-slide-switch',
@@ -241,6 +248,9 @@ export const PART_DEFINITIONS: Record<PartType, PartDefinition> = {
     naturalSize: { width: 76, height: 76 },
     simulated: true,
     pinSummary: 'VCC, SIG, GND',
+    properties: [
+      { key: 'value', label: 'Value', kind: 'number', min: 0, max: 1023, step: 1 },
+    ],
   },
   'wokwi-buzzer': {
     type: 'wokwi-buzzer',
@@ -269,6 +279,13 @@ export const PART_DEFINITIONS: Record<PartType, PartDefinition> = {
     simulated: true,
     pinSummary: 'Segments A-G, DP and common pins COM.1/COM.2',
     breadboardMount: true,
+    properties: [{
+      key: 'color', label: 'Color', kind: 'select', options: [
+        { value: 'red', label: 'Red' }, { value: 'green', label: 'Green' },
+        { value: 'blue', label: 'Blue' }, { value: 'yellow', label: 'Yellow' },
+        { value: 'white', label: 'White' },
+      ],
+    }],
   },
   'wokwi-pushbutton-6mm': {
     type: 'wokwi-pushbutton-6mm',
@@ -284,6 +301,13 @@ export const PART_DEFINITIONS: Record<PartType, PartDefinition> = {
     pinSummary: '1.l and 1.r are one side. 2.l and 2.r are the other side.',
     breadboardMount: true,
     keywords: ['button', 'tactile', 'momentary'],
+    properties: [{
+      key: 'color', label: 'Color', kind: 'select', options: [
+        { value: 'red', label: 'Red' }, { value: 'green', label: 'Green' },
+        { value: 'blue', label: 'Blue' }, { value: 'yellow', label: 'Yellow' },
+        { value: 'white', label: 'White' }, { value: 'black', label: 'Black' },
+      ],
+    }],
   },
   'wokwi-slide-potentiometer': {
     type: 'wokwi-slide-potentiometer',
@@ -298,6 +322,11 @@ export const PART_DEFINITIONS: Record<PartType, PartDefinition> = {
     simulated: true,
     pinSummary: 'VCC, SIG, GND',
     keywords: ['slider', 'analog', 'fader'],
+    properties: [
+      { key: 'value', label: 'Value', kind: 'number', min: 0, max: 100, step: 1 },
+      { key: 'min', label: 'Min', kind: 'number', step: 1 },
+      { key: 'max', label: 'Max', kind: 'number', step: 1 },
+    ],
   },
   'wokwi-analog-joystick': {
     type: 'wokwi-analog-joystick',
@@ -373,6 +402,12 @@ export const PART_DEFINITIONS: Record<PartType, PartDefinition> = {
     pinSummary: 'A1-A10 anodes and C1-C10 cathodes.',
     breadboardMount: true,
     keywords: ['bargraph', '10 segment', 'display'],
+    properties: [{
+      key: 'color', label: 'Color', kind: 'select', options: [
+        { value: 'red', label: 'Red' }, { value: 'green', label: 'Green' },
+        { value: 'blue', label: 'Blue' }, { value: 'yellow', label: 'Yellow' },
+      ],
+    }],
   },
   'wokwi-servo': {
     type: 'wokwi-servo',
@@ -665,6 +700,11 @@ export const PART_DEFINITIONS: Record<PartType, PartDefinition> = {
     simulated: true,
     pinSummary: 'GND, VCC, SDA, SCL. I2C address 0x27.',
     keywords: ['lcd', 'display', 'i2c', '1602'],
+    properties: [{
+      key: 'background', label: 'Backlight', kind: 'select', options: [
+        { value: 'blue', label: 'Blue' }, { value: 'green', label: 'Green' }, { value: 'black', label: 'Black' },
+      ],
+    }],
   },
   'wokwi-lcd2004': {
     type: 'wokwi-lcd2004',
@@ -679,6 +719,11 @@ export const PART_DEFINITIONS: Record<PartType, PartDefinition> = {
     simulated: true,
     pinSummary: 'GND, VCC, SDA, SCL. I2C address 0x27.',
     keywords: ['lcd', 'display', 'i2c', '2004'],
+    properties: [{
+      key: 'background', label: 'Backlight', kind: 'select', options: [
+        { value: 'blue', label: 'Blue' }, { value: 'green', label: 'Green' }, { value: 'black', label: 'Black' },
+      ],
+    }],
   },
   'wokwi-ssd1306': {
     type: 'wokwi-ssd1306',
@@ -720,7 +765,17 @@ export const PART_DEFINITIONS: Record<PartType, PartDefinition> = {
     naturalSize: { width: 81.6, height: 61.2 },
     simulated: true,
     pinSummary: 'SDA, SCL, VCC, GND, INT and auxiliary pins. I2C address 0x68.',
+    breadboardMount: true,
     keywords: ['imu', 'accelerometer', 'gyro', 'i2c'],
+    properties: [
+      { key: 'accelX', label: 'Accel X', kind: 'number', min: -16, max: 16, step: 0.05, unit: 'g' },
+      { key: 'accelY', label: 'Accel Y', kind: 'number', min: -16, max: 16, step: 0.05, unit: 'g' },
+      { key: 'accelZ', label: 'Accel Z', kind: 'number', min: -16, max: 16, step: 0.05, unit: 'g' },
+      { key: 'gyroX', label: 'Gyro X', kind: 'number', min: -2000, max: 2000, step: 1, unit: '°/s' },
+      { key: 'gyroY', label: 'Gyro Y', kind: 'number', min: -2000, max: 2000, step: 1, unit: '°/s' },
+      { key: 'gyroZ', label: 'Gyro Z', kind: 'number', min: -2000, max: 2000, step: 1, unit: '°/s' },
+      { key: 'temperature', label: 'Temperature', kind: 'number', min: -40, max: 85, step: 0.5, unit: 'C' },
+    ],
   },
 };
 
@@ -739,9 +794,9 @@ export function getPartPins(partOrType: CircuitPart | PartType): PinInfo[] {
   const tag = PART_DEFINITIONS[type].tag;
   if (!tag || typeof document === 'undefined') return [];
   const element = document.createElement(tag) as PinElement & Record<string, unknown>;
-  if (typeof partOrType !== 'string') {
-    for (const [key, value] of Object.entries(partOrType.attrs)) element[key] = value;
-  }
+  const defaults = PART_DEFINITIONS[type].defaults;
+  const attrs = typeof partOrType === 'string' ? defaults : { ...defaults, ...partOrType.attrs };
+  for (const [key, value] of Object.entries(attrs)) element[key] = value;
   return Array.isArray(element.pinInfo) ? element.pinInfo : [];
 }
 
@@ -774,12 +829,224 @@ export function resolvePinName(part: CircuitPart, requested: string): string | n
       const found = pins.find((pin) => pin.name === digital);
       if (found) return found.name;
     }
-    if (normalized === 'gnd' || normalized === 'ground') {
+    if (['gnd', 'ground', 'gnd.1', 'gnd.2', 'gnd.3'].includes(normalized)) {
       return pins.find((pin) => pin.name.startsWith('GND'))?.name ?? null;
     }
-    if (normalized === '3v3' || normalized === '3.3v') {
+    if (['3v3', '3.3v', '3v'].includes(normalized)) {
       return pins.find((pin) => pin.name === '3.3V')?.name ?? null;
     }
+    if (['5v', 'vcc'].includes(normalized)) {
+      return pins.find((pin) => pin.name === '5V')?.name ?? null;
+    }
+    if (['vin', '9v', 'raw'].includes(normalized)) {
+      return pins.find((pin) => pin.name === 'VIN')?.name ?? null;
+    }
+    if (['rst', 'reset'].includes(normalized)) {
+      return pins.find((pin) => pin.name === 'RESET')?.name ?? null;
+    }
+    if (['ioref'].includes(normalized)) {
+      return pins.find((pin) => pin.name === 'IOREF')?.name ?? null;
+    }
+    if (['aref'].includes(normalized)) {
+      return pins.find((pin) => pin.name === 'AREF')?.name ?? null;
+    }
+  }
+
+  if (part.type === 'battery-9v') {
+    if (['+', 'pos', 'positive', 'plus', 'vcc', '9v', 'red'].includes(normalized)) return '+';
+    if (['-', 'neg', 'negative', 'minus', 'gnd', 'ground', '0v', 'black'].includes(normalized)) return '-';
+  }
+
+  if (part.type === 'rectifier-diode') {
+    if (['a', 'anode', 'pos', 'positive', '+', '1', 'in', 'p'].includes(normalized)) return 'A';
+    if (['c', 'k', 'cathode', 'neg', 'negative', '-', '2', 'out', 'n'].includes(normalized)) return 'C';
+  }
+
+  if (part.type === 'npn-transistor') {
+    if (['1', 'e', 'emitter'].includes(normalized)) return 'E';
+    if (['2', 'b', 'base'].includes(normalized)) return 'B';
+    if (['3', 'c', 'collector'].includes(normalized)) return 'C';
+  }
+
+  if (part.type === 'wokwi-led') {
+    if (['a', 'anode', 'pos', 'positive', '+', '1', 'pin1', 'led+'].includes(normalized)) return 'A';
+    if (['c', 'k', 'cathode', 'neg', 'negative', '-', '2', 'pin2', 'led-', 'gnd'].includes(normalized)) return 'C';
+  }
+
+  if (part.type === 'wokwi-rgb-led') {
+    if (['r', 'red'].includes(normalized)) return 'R';
+    if (['g', 'green'].includes(normalized)) return 'G';
+    if (['b', 'blue'].includes(normalized)) return 'B';
+    if (['com', 'common', 'cathode', 'anode', 'c', 'gnd', 'vcc'].includes(normalized)) return 'COM';
+  }
+
+  if (part.type === 'wokwi-resistor') {
+    if (['1', 'p1', 'pin 1', 'pin1', 'left', 'a', 'r1'].includes(normalized)) return '1';
+    if (['2', 'p2', 'pin 2', 'pin2', 'right', 'b', 'r2'].includes(normalized)) return '2';
+  }
+
+  if (part.type === 'wokwi-pushbutton' || part.type === 'wokwi-pushbutton-6mm') {
+    if (['1.l', '1l', 'l1', '1_l', '1a', 'left1', '1'].includes(normalized)) return '1.l';
+    if (['2.l', '2l', 'l2', '2_l', '2a', 'left2', '2'].includes(normalized)) return '2.l';
+    if (['1.r', '1r', 'r1', '1_r', '1b', 'right1', '3'].includes(normalized)) return '1.r';
+    if (['2.r', '2r', 'r2', '2_r', '2b', 'right2', '4'].includes(normalized)) return '2.r';
+  }
+
+  if (part.type === 'wokwi-slide-switch') {
+    if (['1', 'p1', 'pin 1', 'pin1', 'a', 'sw1'].includes(normalized)) return '1';
+    if (['2', 'p2', 'pin 2', 'pin2', 'com', 'common', 'in', 'c'].includes(normalized)) return '2';
+    if (['3', 'p3', 'pin 3', 'pin3', 'b', 'sw2'].includes(normalized)) return '3';
+  }
+
+  if (part.type === 'wokwi-potentiometer' || part.type === 'wokwi-slide-potentiometer') {
+    if (['gnd', 'ground', '0v', '-', 'neg', 'p1', '1'].includes(normalized)) return 'GND';
+    if (['sig', 'signal', 'out', 'wiper', 'analog', 'adj', 's', 'p2', '2'].includes(normalized)) return 'SIG';
+    if (['vcc', '5v', '3v3', '3.3v', 'power', 'vin', '+', 'pos', 'p3', '3'].includes(normalized)) return 'VCC';
+  }
+
+  if (part.type === 'wokwi-buzzer') {
+    if (['1', 'p1', 'pin 1', 'pin1', 'pos', '+', 'positive', 'anode', 'sig', 'in'].includes(normalized)) return '1';
+    if (['2', 'p2', 'pin 2', 'pin2', 'neg', '-', 'negative', 'cathode', 'gnd', 'ground'].includes(normalized)) return '2';
+  }
+
+  if (part.type === 'dc-motor') {
+    if (['1', 'p1', 'pin 1', 'pin1', 'pos', '+', 'positive', 'a', 'm+'].includes(normalized)) return '1';
+    if (['2', 'p2', 'pin 2', 'pin2', 'neg', '-', 'negative', 'b', 'm-', 'gnd'].includes(normalized)) return '2';
+  }
+
+  if (part.type === 'wokwi-servo') {
+    if (['gnd', 'ground', '-', '0v', 'brown', 'black'].includes(normalized)) return 'GND';
+    if (['v+', 'vcc', '5v', 'vin', 'power', '+', 'red', 'v'].includes(normalized)) return 'V+';
+    if (['pwm', 'sig', 'signal', 'control', 'in', 'data', 'orange', 'yellow', 'white', 's'].includes(normalized)) return 'PWM';
+  }
+
+  if (part.type === 'wokwi-stepper-motor') {
+    if (['a-', 'a1', 'a_neg', '-a'].includes(normalized)) return 'A-';
+    if (['a+', 'a2', 'a_pos', '+a'].includes(normalized)) return 'A+';
+    if (['b+', 'b1', 'b_pos', '+b'].includes(normalized)) return 'B+';
+    if (['b-', 'b2', 'b_neg', '-b'].includes(normalized)) return 'B-';
+  }
+
+  if (part.type === 'wokwi-tilt-switch') {
+    if (['gnd', 'ground', '-'].includes(normalized)) return 'GND';
+    if (['vcc', '5v', 'power', 'vin', '+'].includes(normalized)) return 'VCC';
+    if (['out', 'sig', 'signal', 'data', 'do', 's'].includes(normalized)) return 'OUT';
+  }
+
+  if (part.type === 'wokwi-ntc-temperature-sensor') {
+    if (['gnd', 'ground', '-'].includes(normalized)) return 'GND';
+    if (['vcc', '5v', 'power', 'vin', '+'].includes(normalized)) return 'VCC';
+    if (['out', 'sig', 'signal', 'ao', 'analog', 's'].includes(normalized)) return 'OUT';
+  }
+
+  if (part.type === 'wokwi-photoresistor-sensor') {
+    if (['vcc', '5v', 'power', 'vin', '+'].includes(normalized)) return 'VCC';
+    if (['gnd', 'ground', '-'].includes(normalized)) return 'GND';
+    if (['do', 'dout', 'digital', 'd0'].includes(normalized)) return 'DO';
+    if (['ao', 'aout', 'analog', 'sig', 'a0'].includes(normalized)) return 'AO';
+  }
+
+  if (part.type === 'wokwi-pir-motion-sensor') {
+    if (['vcc', '5v', 'power', 'vin', '+'].includes(normalized)) return 'VCC';
+    if (['out', 'sig', 'signal', 'data', 'do', 's'].includes(normalized)) return 'OUT';
+    if (['gnd', 'ground', '-'].includes(normalized)) return 'GND';
+  }
+
+  if (part.type === 'wokwi-hc-sr04') {
+    if (['vcc', '5v', 'power', '+'].includes(normalized)) return 'VCC';
+    if (['trig', 'trigger', 't'].includes(normalized)) return 'TRIG';
+    if (['echo', 'e', 'r'].includes(normalized)) return 'ECHO';
+    if (['gnd', 'ground', '-'].includes(normalized)) return 'GND';
+  }
+
+  if (part.type === 'wokwi-dht22') {
+    if (['vcc', '5v', '3v3', 'power', '+'].includes(normalized)) return 'VCC';
+    if (['sda', 'dat', 'data', 'sig', 'out', 'io', 'd'].includes(normalized)) return 'SDA';
+    if (['nc', 'none'].includes(normalized)) return 'NC';
+    if (['gnd', 'ground', '-'].includes(normalized)) return 'GND';
+  }
+
+  if (
+    part.type === 'wokwi-gas-sensor' ||
+    part.type === 'wokwi-flame-sensor' ||
+    part.type === 'wokwi-big-sound-sensor' ||
+    part.type === 'wokwi-small-sound-sensor'
+  ) {
+    if (['aout', 'ao', 'analog', 'sig', 'a0', 'a'].includes(normalized)) return 'AOUT';
+    if (['dout', 'do', 'digital', 'd0', 'd'].includes(normalized)) return 'DOUT';
+    if (['gnd', 'ground', '-', 'g'].includes(normalized)) return 'GND';
+    if (['vcc', '5v', 'power', '+', 'v'].includes(normalized)) return 'VCC';
+  }
+
+  if (part.type === 'wokwi-heart-beat-sensor') {
+    if (['gnd', 'ground', '-', 'g'].includes(normalized)) return 'GND';
+    if (['vcc', '5v', 'power', '+', 'v'].includes(normalized)) return 'VCC';
+    if (['out', 'sig', 'signal', 'ao', 'analog', 's'].includes(normalized)) return 'OUT';
+  }
+
+  if (part.type === 'wokwi-ir-receiver') {
+    if (['gnd', 'ground', '-', 'g'].includes(normalized)) return 'GND';
+    if (['vcc', '5v', 'power', '+', 'v'].includes(normalized)) return 'VCC';
+    if (['dat', 'data', 'out', 'sig', 'signal', 'ir', 's'].includes(normalized)) return 'DAT';
+  }
+
+  if (part.type === 'wokwi-lcd1602' || part.type === 'wokwi-lcd2004') {
+    if (['gnd', 'ground', '-', 'vss'].includes(normalized)) return 'GND';
+    if (['vcc', '5v', 'power', '+', 'vdd'].includes(normalized)) return 'VCC';
+    if (['sda', 'data', 'd'].includes(normalized)) return 'SDA';
+    if (['scl', 'clock', 'clk', 'c'].includes(normalized)) return 'SCL';
+  }
+
+  if (part.type === 'wokwi-ssd1306') {
+    if (['data', 'sda', 'd1', 'mosi', 'sdin'].includes(normalized)) return 'DATA';
+    if (['clk', 'scl', 'd0', 'sclk', 'clock'].includes(normalized)) return 'CLK';
+    if (['gnd', 'ground', 'g', '-'].includes(normalized)) return 'GND';
+    if (['vin', 'vcc', '5v', 'power', '+'].includes(normalized)) return 'VIN';
+    if (['3v3', '3.3v'].includes(normalized)) return '3V3';
+    if (['rst', 'reset'].includes(normalized)) return 'RST';
+    if (['dc', 'data/command'].includes(normalized)) return 'DC';
+    if (['cs', 'chip select'].includes(normalized)) return 'CS';
+  }
+
+  if (part.type === 'wokwi-ds1307') {
+    if (['gnd', 'ground', '-'].includes(normalized)) return 'GND';
+    if (['5v', 'vcc', 'power', 'vin', '+'].includes(normalized)) return '5V';
+    if (['sda', 'data', 'd'].includes(normalized)) return 'SDA';
+    if (['scl', 'clock', 'clk', 'c'].includes(normalized)) return 'SCL';
+    if (['sqw', 'squarewave', 'out', 's'].includes(normalized)) return 'SQW';
+  }
+
+  if (part.type === 'wokwi-mpu6050') {
+    if (['vcc', '5v', '3v3', 'power', 'vin', '+'].includes(normalized)) return 'VCC';
+    if (['gnd', 'ground', '-'].includes(normalized)) return 'GND';
+    if (['scl', 'clock', 'clk', 'c'].includes(normalized)) return 'SCL';
+    if (['sda', 'data', 'd'].includes(normalized)) return 'SDA';
+    if (['ad0', 'addr', 'address', 'sdo'].includes(normalized)) return 'AD0';
+    if (['int', 'interrupt'].includes(normalized)) return 'INT';
+    if (['xda', 'aux_da'].includes(normalized)) return 'XDA';
+    if (['xcl', 'aux_cl'].includes(normalized)) return 'XCL';
+  }
+
+  if (part.type === 'wokwi-analog-joystick') {
+    if (['vcc', '5v', 'power', '+'].includes(normalized)) return 'VCC';
+    if (['vert', 'vry', 'vy', 'y', 'vertical'].includes(normalized)) return 'VERT';
+    if (['horz', 'vrx', 'vx', 'x', 'horizontal'].includes(normalized)) return 'HORZ';
+    if (['sel', 'sw', 'switch', 'btn', 'button', 'key', 'z'].includes(normalized)) return 'SEL';
+    if (['gnd', 'ground', '-'].includes(normalized)) return 'GND';
+  }
+
+  if (part.type === 'wokwi-ky-040') {
+    if (['clk', 'clock', 'a', 'outa', 'output a'].includes(normalized)) return 'CLK';
+    if (['dt', 'data', 'b', 'outb', 'output b'].includes(normalized)) return 'DT';
+    if (['sw', 'switch', 'btn', 'button', 'key'].includes(normalized)) return 'SW';
+    if (['vcc', '5v', 'power', '+', '+5v'].includes(normalized)) return 'VCC';
+    if (['gnd', 'ground', '-'].includes(normalized)) return 'GND';
+  }
+
+  if (part.type === 'wokwi-7segment') {
+    if (['dp', 'dot', 'point'].includes(normalized)) return 'DP';
+    if (['com.1', 'com1', 'c1'].includes(normalized)) return 'COM.1';
+    if (['com.2', 'com2', 'c2', 'com', 'common'].includes(normalized)) return 'COM.2';
   }
 
   return null;

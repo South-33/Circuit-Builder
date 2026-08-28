@@ -896,12 +896,13 @@ harness.test('F08: Diagnostics on clean presets return zero errors', () => {
 
 // F09: WebMCP 6-Tool Contract Verification
 harness.test('F09: Agent planning grid coordinate conversions', () => {
+  // Grid (0,0) = canvas center (1600,1000). Grid (x,y) → canvas (x*32+1600, y*32+1000).
   const canvas = gridPointToCanvas({ x: 2, y: 3 });
-  assertEqual(canvas.x, 64);
-  assertEqual(canvas.y, 96);
+  assertEqual(canvas.x, 2 * 32 + 1600);  // 1664
+  assertEqual(canvas.y, 3 * 32 + 1000);  // 1096
   const placement = gridPartPlacement({ x: 4, y: 5 });
-  assertEqual(placement.left, 128);
-  assertEqual(placement.top, 160);
+  assertEqual(placement.left, 4 * 32 + 1600);  // 1728
+  assertEqual(placement.top, 5 * 32 + 1000);   // 1160
 });
 
 harness.test('F09: Wire polyline preserves authored waypoints without autorouting', () => {
@@ -999,8 +1000,9 @@ harness.test('F09: WebMCP edit-circuit places parts by grid coordinate and pixel
   const snapshot = circuitStore.getSnapshot();
   const uno = snapshot.parts.find((p) => p.id === 'uno1');
   const led = snapshot.parts.find((p) => p.id === 'led1');
-  assertEqual(uno?.left, 64);
-  assertEqual(uno?.top, 96);
+  // Grid (2,3) → canvas: 2*32+1600=1664, 3*32+1000=1096
+  assertEqual(uno?.left, 1664);
+  assertEqual(uno?.top, 1096);
   assertEqual(led?.left, 400);
   assertEqual(led?.top, 200);
   assertEqual(led?.attrs.color, 'blue');
@@ -1114,8 +1116,9 @@ harness.test('F09: WebMCP connect-pins preserves orthogonal grid routes and reje
 
   const snap = circuitStore.getSnapshot();
   assertEqual(snap.connections[0].waypoints.length, 3);
-  assertEqual(snap.connections[0].waypoints[0].x, 320);
-  assertEqual(snap.connections[0].waypoints[0].y, 320);
+  // Grid (10,10) → canvas: 10*32 + 1600 = 1920, 10*32 + 1000 = 1320
+  assertEqual(snap.connections[0].waypoints[0].x, 1920);
+  assertEqual(snap.connections[0].waypoints[0].y, 1320);
 
   // Non-orthogonal diagonal route: (10, 10) -> (20, 25) must fail
   await assertThrowsAsync(async () => {

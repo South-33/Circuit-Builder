@@ -3,10 +3,17 @@ import type { CircuitConnection, CircuitPart, PartType } from '../circuit/types'
 import { alignExplicitSeating } from '../breadboard/placement';
 import { partRect } from '../wires/geometry';
 
-// A large logical surface keeps circuit coordinates stable for WebMCP while
+// A focused logical surface keeps circuit coordinates compact while
 // letting the viewport roam like an open workbench instead of a page.
-export const WORKSPACE_WIDTH = 16000;
-export const WORKSPACE_HEIGHT = 10000;
+// 3200×2000 = 100×62 agent grid cells at 32px each — right-sized for
+// circuits an agent can reason about in one planning grid.
+export const WORKSPACE_WIDTH = 3200;
+export const WORKSPACE_HEIGHT = 2000;
+
+// Canvas center. Grid (0,0) maps here so agents use coordinates that feel
+// natural: small numbers around zero rather than large absolute offsets.
+export const CANVAS_CENTER_X = WORKSPACE_WIDTH / 2;   // 1600
+export const CANVAS_CENTER_Y = WORKSPACE_HEIGHT / 2;  // 1000
 
 const GAP = 22;
 const SEARCH_STEP = 34;
@@ -62,7 +69,7 @@ function overlaps(type: PartType, point: Point, parts: CircuitPart[]) {
 export function findOpenPlacement(
   type: PartType,
   parts: CircuitPart[],
-  preferred: Point = { left: 260, top: 170 },
+  preferred: Point = { left: CANVAS_CENTER_X, top: CANVAS_CENTER_Y },
 ): Point {
   const origin = clampPlacement(type, preferred);
   if (!overlaps(type, origin, parts)) return origin;

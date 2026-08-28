@@ -1,5 +1,5 @@
 import { getPartPins, PART_ORDER, resolvePinName } from '../components/parts';
-import { buildAgentLayout, canvasPointToGrid, gridPartPlacement, gridPointToCanvas } from './layout';
+import { buildAgentLayout, canvasPointToGrid, gridPartPlacement, gridPointToCanvas, partGridSize } from './layout';
 import { diagnoseCircuit } from '../sim/diagnostics';
 import { buildCircuitGraph, directlyConnectedNodes } from '../sim/circuitGraph';
 import { simulator } from '../sim/simulator';
@@ -166,6 +166,9 @@ function inspectCircuit(
       id: part.id,
       type: part.type,
       grid: canvasPointToGrid({ x: part.left, y: part.top }),
+      // gridSize: number of agent grid cells this part occupies (width × height).
+      // Cells from grid.x to grid.x+gridSize.w-1 and grid.y to grid.y+gridSize.h-1 are taken.
+      gridSize: partGridSize(part),
       ...(part.rotate ? { rotate: part.rotate } : {}),
       ...(part.attrs && Object.keys(part.attrs).length ? { attrs: part.attrs } : {}),
       ...(part.seating ? { seating: part.seating } : {}),

@@ -1,5 +1,5 @@
 import { defaultCode, getPartPins, PART_DEFINITIONS } from '../components/parts';
-import { findOpenPlacement } from '../layout/placement';
+import { findOpenPlacement, CANVAS_CENTER_X, CANVAS_CENTER_Y } from '../layout/placement';
 import { alignExplicitSeating, seatPartAtHole, snapPartPlacement, type BreadboardAnchor, type SnapMode } from '../breadboard/placement';
 import { endpointPoint } from '../wires/geometry';
 import { normalizeWaypoints } from '../wires/path';
@@ -197,8 +197,8 @@ class CircuitStore {
       const nudgeX = candidate.nudge ? candidate.nudge.dx * 32 : 0;
       const nudgeY = candidate.nudge ? candidate.nudge.dy * 32 : 0;
       const preferred = {
-        left: (candidate.left ?? existing?.left ?? 260) + nudgeX,
-        top: (candidate.top ?? existing?.top ?? 170) + nudgeY,
+        left: (candidate.left ?? existing?.left ?? CANVAS_CENTER_X) + nudgeX,
+        top: (candidate.top ?? existing?.top ?? CANVAS_CENTER_Y) + nudgeY,
       };
       const placement = existing || hasExplicitPosition || candidate.nudge
         ? preferred

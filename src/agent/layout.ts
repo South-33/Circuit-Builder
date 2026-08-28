@@ -3,6 +3,7 @@ import type { CircuitConnection, CircuitDocument, CircuitPart, WirePoint } from 
 import { endpointParts, endpointPoint, partRect, pinExitDirection } from '../wires/geometry';
 import { connectionPolyline, isOrthogonalPair, type WireAxis } from '../wires/path';
 import { isBreadboardType } from '../breadboard/geometry';
+import { CANVAS_CENTER_X, CANVAS_CENTER_Y } from '../layout/placement';
 
 export const AGENT_GRID_SIZE = 32;
 const MAP_MARGIN_CELLS = 2;
@@ -21,14 +22,26 @@ type Rect = { x: number; y: number; width: number; height: number };
 
 type Segment = { a: WirePoint; b: WirePoint };
 
+/**
+ * Convert an agent grid coordinate to canvas pixels.
+ * Grid (0,0) = canvas center (CANVAS_CENTER_X, CANVAS_CENTER_Y).
+ * Positive X is right, positive Y is down.
+ */
 export function gridPointToCanvas(point: WirePoint): WirePoint {
-  return { x: point.x * AGENT_GRID_SIZE, y: point.y * AGENT_GRID_SIZE };
+  return {
+    x: point.x * AGENT_GRID_SIZE + CANVAS_CENTER_X,
+    y: point.y * AGENT_GRID_SIZE + CANVAS_CENTER_Y,
+  };
 }
 
+/**
+ * Convert canvas pixels to an agent grid coordinate.
+ * Grid (0,0) = canvas center. Returns integers (rounded).
+ */
 export function canvasPointToGrid(point: WirePoint): WirePoint {
   return {
-    x: Math.round(point.x / AGENT_GRID_SIZE),
-    y: Math.round(point.y / AGENT_GRID_SIZE),
+    x: Math.round((point.x - CANVAS_CENTER_X) / AGENT_GRID_SIZE),
+    y: Math.round((point.y - CANVAS_CENTER_Y) / AGENT_GRID_SIZE),
   };
 }
 
@@ -228,13 +241,14 @@ export function evaluateLayout(document: Pick<CircuitDocument, 'parts' | 'connec
       });
     }
 
+    // Segments between waypoints = bends. Cap at 2 bends (3 waypoints) for clean cable management.
     const authoredBends = Math.max(0, authored.length - 1);
-    if (authoredBends > 4) {
+    if (authoredBends > 3) {
       issues.push({
         kind: 'too-many-bends',
         severity: 'warning',
         itemIds: [connection.id],
-        message: `${connection.id} has ${authoredBends} authored bends. Prefer a simpler intentional route.`,
+        message: `${connection.id} has ${authoredBends} bends (waypoints). Aim for ≤2 bends: exit the pin, travel in one direction, turn once, arrive at the destination.`,
       });
     }
     if (authored.length >= 2) {
@@ -282,22 +296,24 @@ export function evaluateLayout(document: Pick<CircuitDocument, 'parts' | 'connec
         }
       }
       if (!crossing) continue;
+      const cx = Math.round((crossing.x - CANVAS_CENTER_X) / AGENT_GRID_SIZE);
+      const cy = Math.round((crossing.y - CANVAS_CENTER_Y) / AGENT_GRID_SIZE);
       issues.push({
         kind: 'wire-crossing',
         severity: 'warning',
         itemIds: [first.id, second.id],
-        message: `${first.id} crosses ${second.id} near grid (${Math.round(crossing.x / AGENT_GRID_SIZE)}, ${Math.round(crossing.y / AGENT_GRID_SIZE)}). Separate the routes when practical.`,
+        message: `${first.id} crosses ${second.id} near grid (${cx}, ${cy}). Separate the routes when practical.`,
       });
     }
   }
 
   const penalties: Record<LayoutIssue['kind'], number> = {
     'part-overlap': 20,
-    'wire-through-part': 12,
+    'wire-through-part': 20,   // raised: passing through a part body is never acceptable
     'wire-crossing': 3,
     'wire-overlap': 6,
     'diagonal-waypoints': 4,
-    'too-many-bends': 2,
+    'too-many-bends': 3,       // raised: encourage simpler routes earlier
     'long-route': 2,
   };
   const score = Math.max(0, 100 - issues.reduce((sum, issue) => sum + penalties[issue.kind], 0));
@@ -328,11 +344,23 @@ function rasterizeSegment(a: WirePoint, b: WirePoint) {
 
 function partGridRect(part: CircuitPart) {
   const rect = partRect(part);
+  // Use centered grid coordinates: subtract canvas center before dividing
+  const gx = (rect.x - CANVAS_CENTER_X) / AGENT_GRID_SIZE;
+  const gy = (rect.y - CANVAS_CENTER_Y) / AGENT_GRID_SIZE;
   return {
-    x: Math.floor(rect.x / AGENT_GRID_SIZE),
-    y: Math.floor(rect.y / AGENT_GRID_SIZE),
+    x: Math.floor(gx),
+    y: Math.floor(gy),
     width: Math.max(1, Math.ceil(rect.width / AGENT_GRID_SIZE)),
     height: Math.max(1, Math.ceil(rect.height / AGENT_GRID_SIZE)),
+  };
+}
+
+/** Grid size in cells for a given part (rounded up to nearest whole cell). */
+export function partGridSize(part: CircuitPart): { w: number; h: number } {
+  const bounds = getPartBounds(part.type);
+  return {
+    w: Math.max(1, Math.ceil(bounds.width / AGENT_GRID_SIZE)),
+    h: Math.max(1, Math.ceil(bounds.height / AGENT_GRID_SIZE)),
   };
 }
 
@@ -345,14 +373,17 @@ export function buildAgentLayout(document: Pick<CircuitDocument, 'parts' | 'conn
   }
   for (const connection of connections) allPoints.push(...wirePoints(connection, parts));
 
-  const minX = allPoints.length ? Math.min(...allPoints.map((point) => point.x)) : 0;
-  const minY = allPoints.length ? Math.min(...allPoints.map((point) => point.y)) : 0;
-  const maxX = allPoints.length ? Math.max(...allPoints.map((point) => point.x)) : AGENT_GRID_SIZE * 24;
-  const maxY = allPoints.length ? Math.max(...allPoints.map((point) => point.y)) : AGENT_GRID_SIZE * 16;
-  let gridLeft = Math.max(0, Math.floor(minX / AGENT_GRID_SIZE) - MAP_MARGIN_CELLS);
-  let gridTop = Math.max(0, Math.floor(minY / AGENT_GRID_SIZE) - MAP_MARGIN_CELLS);
-  let gridRight = Math.ceil(maxX / AGENT_GRID_SIZE) + MAP_MARGIN_CELLS;
-  let gridBottom = Math.ceil(maxY / AGENT_GRID_SIZE) + MAP_MARGIN_CELLS;
+  // Derive map bounds in CANVAS pixels first, then convert to centered grid coords
+  const minX = allPoints.length ? Math.min(...allPoints.map((point) => point.x)) : CANVAS_CENTER_X - AGENT_GRID_SIZE * 12;
+  const minY = allPoints.length ? Math.min(...allPoints.map((point) => point.y)) : CANVAS_CENTER_Y - AGENT_GRID_SIZE * 8;
+  const maxX = allPoints.length ? Math.max(...allPoints.map((point) => point.x)) : CANVAS_CENTER_X + AGENT_GRID_SIZE * 12;
+  const maxY = allPoints.length ? Math.max(...allPoints.map((point) => point.y)) : CANVAS_CENTER_Y + AGENT_GRID_SIZE * 8;
+
+  // Convert to centered grid coords (no Math.max(0) — negative coords are valid)
+  let gridLeft = Math.floor((minX - CANVAS_CENTER_X) / AGENT_GRID_SIZE) - MAP_MARGIN_CELLS;
+  let gridTop = Math.floor((minY - CANVAS_CENTER_Y) / AGENT_GRID_SIZE) - MAP_MARGIN_CELLS;
+  let gridRight = Math.ceil((maxX - CANVAS_CENTER_X) / AGENT_GRID_SIZE) + MAP_MARGIN_CELLS;
+  let gridBottom = Math.ceil((maxY - CANVAS_CENTER_Y) / AGENT_GRID_SIZE) + MAP_MARGIN_CELLS;
   if (gridRight - gridLeft > MAX_MAP_COLUMNS) gridRight = gridLeft + MAX_MAP_COLUMNS;
   if (gridBottom - gridTop > MAX_MAP_ROWS) gridBottom = gridTop + MAX_MAP_ROWS;
 
@@ -360,11 +391,19 @@ export function buildAgentLayout(document: Pick<CircuitDocument, 'parts' | 'conn
   const height = Math.max(1, gridBottom - gridTop + 1);
   const rows = Array.from({ length: height }, () => Array.from({ length: width }, () => '.'));
   const legend: Record<string, string> = {};
+  // spans gives agents the exact bounding box for each symbol in the map
+  const spans: Record<string, { id: string; type: string; grid: { x: number; y: number }; gridSize: { w: number; h: number } }> = {};
 
   parts.forEach((part, index) => {
     const symbol = SYMBOLS[index] ?? '?';
     legend[symbol] = `${part.id}:${part.type}`;
     const rect = partGridRect(part);
+    spans[symbol] = {
+      id: part.id,
+      type: part.type,
+      grid: { x: rect.x, y: rect.y },
+      gridSize: { w: rect.width, h: rect.height },
+    };
     for (let y = rect.y; y < rect.y + rect.height; y++) {
       for (let x = rect.x; x < rect.x + rect.width; x++) {
         const row = y - gridTop;
@@ -393,14 +432,54 @@ export function buildAgentLayout(document: Pick<CircuitDocument, 'parts' | 'conn
     if (rows[row][column] === '.') rows[row][column] = owner === 'crossing' ? 'X' : '*';
   }
 
+  // Build routing hints: find rows and columns that are fully clear of parts
+  const occupiedCols = new Set<number>();
+  const occupiedRows = new Set<number>();
+  for (const part of parts) {
+    const rect = partGridRect(part);
+    for (let y = rect.y; y < rect.y + rect.height; y++) occupiedRows.add(y);
+    for (let x = rect.x; x < rect.x + rect.width; x++) occupiedCols.add(x);
+  }
+  const freeRows: number[] = [];
+  const freeCols: number[] = [];
+  for (let y = gridTop; y <= gridBottom; y++) if (!occupiedRows.has(y)) freeRows.push(y);
+  for (let x = gridLeft; x <= gridRight; x++) if (!occupiedCols.has(x)) freeCols.push(x);
+
+  // Suggest the nearest clear lanes above/below and left/right of the part cluster
+  const clusterMinRow = parts.length ? Math.min(...parts.map((p) => partGridRect(p).y)) : gridTop;
+  const clusterMaxRow = parts.length ? Math.max(...parts.map((p) => { const r = partGridRect(p); return r.y + r.height - 1; })) : gridBottom;
+  const clusterMinCol = parts.length ? Math.min(...parts.map((p) => partGridRect(p).x)) : gridLeft;
+  const clusterMaxCol = parts.length ? Math.max(...parts.map((p) => { const r = partGridRect(p); return r.x + r.width - 1; })) : gridRight;
+
+  const laneAbove = freeRows.filter((r) => r < clusterMinRow).at(-1) ?? null;
+  const laneBelow = freeRows.find((r) => r > clusterMaxRow) ?? null;
+  const laneLeft = freeCols.filter((c) => c < clusterMinCol).at(-1) ?? null;
+  const laneRight = freeCols.find((c) => c > clusterMaxCol) ?? null;
+
   return {
     map: {
+      // origin tells agent the top-left corner of this map in centered grid coords
       origin: { x: gridLeft, y: gridTop },
       width,
       height,
-      cols: `     ` + Array.from({ length: width }, (_, i) => ((i + gridLeft) % 5 === 0 ? String((i + gridLeft) % 10) : ' ')).join(''),
-      rows: rows.map((row, idx) => `${String(idx + gridTop).padStart(2, '0')} | ${row.join('')}`),
-      legend: { ...legend, '*': 'wire', X: 'crossing' },
+      cols: `     ` + Array.from({ length: width }, (_, i) => ((i + gridLeft) % 5 === 0 ? String(Math.abs((i + gridLeft) % 10)) : ' ')).join(''),
+      rows: rows.map((row, idx) => {
+        const gRow = idx + gridTop;
+        const label = String(gRow).padStart(3, ' ');
+        return `${label} | ${row.join('')}`;
+      }),
+      legend: { ...legend, '*': 'wire', X: 'wire-crossing' },
+      // spans: exact grid bounding box for each part symbol — use this when routing wires around components
+      spans,
+    },
+    routingHints: {
+      // Prefer these clear row/col lanes for horizontal and vertical wire segments
+      clearLaneAbove: laneAbove,
+      clearLaneBelow: laneBelow,
+      clearLaneLeft: laneLeft,
+      clearLaneRight: laneRight,
+      // Tip: route horizontal wire segments along clear rows, vertical segments along clear columns.
+      // Keep one wire per lane. Use gridWaypoints with at most 2 bends per wire.
     },
     quality: evaluateLayout(document),
   };

@@ -86,13 +86,94 @@ The agent behaves like a careful engineer laying out a circuit on graph paper. T
 5. **`simulate`**: Compiles firmware to AVR machine code, starts/stops execution, and checks runtime state.
 6. **`focus`**: Visually highlights components, wires, or sketch lines in the workspace.
 
+### 3.1 Grid Coordinate Convention
+
+The agent planning grid uses **centered coordinates** — grid (0, 0) is the visual center of the workspace:
+
+```
+canvas_x = grid_x × 32 + 1600
+canvas_y = grid_y × 32 + 1000
+
+grid_x = round((canvas_x − 1600) / 32)
+grid_y = round((canvas_y − 1000) / 32)
+```
+
+- Positive X goes right, positive Y goes down.
+- Small integer coords near zero are the working area: a typical circuit fits within ±20 cells on each axis.
+- Use `grid: { x, y }` in `edit-circuit` to place parts at exact positions.
+- `inspect-circuit` returns each part's `grid` (top-left cell) and `gridSize: { w, h }` (cells occupied). The part's footprint spans from `grid.x` to `grid.x + gridSize.w − 1` and `grid.y` to `grid.y + gridSize.h − 1`.
+
+### 3.2 Wire Routing Rules
+
+Think of wires as **cable management, not free-form lines**. The goal is uniform, traceable paths that look like the third-party reference image: straight runs, one directional change, no crossing over components.
+
+**Rules — enforce all of them:**
+
+1. **Maximum 2 bends per wire.** Most connections need 0 or 1. More than 2 is always a sign of a bad route.
+2. **Exit perpendicular, then travel.** Leave a pin horizontally if it faces left/right, vertically if it faces up/down. Make the first segment short (1–2 cells), then travel the long distance.
+3. **Horizontal then vertical (H-then-V) or vertical then horizontal (V-then-H).** Pick one pattern and stick to it per wire. Never mix both after the exit.
+4. **One wire per lane.** Give each wire its own row (for horizontal runs) or its own column (for vertical runs). Do not stack wires on the same row/column.
+5. **Never cross a component body.** Look at `map.spans` in the layout response to see which cells each part occupies. Route around those cells.
+6. **Use `routingHints`.** The layout response includes `routingHints.clearLaneAbove/Below/Left/Right` — the nearest grid row/column that is completely free of parts. Use these as wire highways.
+7. **Power and ground wires run along the outermost clear lanes.** Signal wires use inner lanes. This mirrors real-world cable management.
+8. **Straight connection = no waypoints.** If two pins are roughly aligned (same row or column), omit `gridWaypoints` entirely — the wire draws straight automatically.
+
+**Example good route (Arduino at 0,0 → LED at 8,−3):**
+```json
+{ "from": "uno1:13", "to": "led1:A",
+  "gridWaypoints": [{"x":0,"y":−4}, {"x":8,"y":−4}] }
+```
+One bend: go up to a clear lane (row −4), travel right. Clean.
+
+**Example bad route (avoid):**
+```json
+{ "gridWaypoints": [{"x":2,"y":0},{"x":2,"y":3},{"x":5,"y":3},{"x":5,"y":−1},{"x":8,"y":−1}] }
+```
+Four bends, snaking through the layout. Flagged as `too-many-bends`.
+
+### 3.3 Component Footprint
+
+Every part returned by `inspect-circuit` includes `gridSize: { w, h }`. The part occupies cells:
+- **x range:** `grid.x` to `grid.x + gridSize.w − 1`
+- **y range:** `grid.y` to `grid.y + gridSize.h − 1`
+
+Key footprints to remember:
+| Component | Typical gridSize |
+|-----------|-----------------|
+| Arduino Uno | 9 × 7 |
+| Breadboard (full) | 23 × 7 |
+| Half Breadboard | 11 × 7 |
+| 9V Battery | 4 × 7 |
+| Potentiometer | 3 × 3 |
+| LED | 2 × 2 |
+| Resistor | 2 × 1 |
+| NPN Transistor | 1 × 1 |
+
+Place parts so their footprints don't overlap (except breadboard-mounted components using `seat`). The map legend `spans` field gives you each part's exact bounding box after placement.
+
+### 3.4 NPN Transistor Pattern
+
+The NPN transistor (`npn-transistor`) appears in the diagnostics with this warning when wired without a base resistor:
+> "NPN Transistor base (B) has no current-limiting resistor. Add a 1kΩ resistor between the Arduino pin and Base to protect the MCU."
+
+**Always add a 1kΩ resistor in series between the Arduino digital pin and the transistor base.** The correct wiring:
+
+```
+Arduino pin → [1kΩ resistor] → NPN Base (B)
+Load (motor/LED/relay) → NPN Collector (C)
+NPN Emitter (E) → GND
+```
+
+Without this resistor the MCU output pin drives the base directly. The diagnostic will fire and the quality score will drop.
+
 ### Recommended Agent Loop
 1. Inspect the workspace or target prompt/image.
 2. Place major parts and seat breadboard components in an atomic or batch `edit-circuit` call.
-3. Route wires with dedicated orthogonal parallel lanes using `connect-pins`.
-4. Upload sketch with `set-code`.
-5. Probe power nets with `inspect-circuit` (`netOf`).
-6. Run `simulate` to verify AVR execution and check DRC diagnostics.
+3. **Read the returned layout** — check `map.spans` for part footprints and `routingHints` for clear lanes.
+4. Route wires with dedicated orthogonal parallel lanes using `connect-pins`. Max 2 bends per wire. Use clear lanes from `routingHints`.
+5. Upload sketch with `set-code`.
+6. Probe power nets with `inspect-circuit` (`netOf`).
+7. Run `simulate` to verify AVR execution and check DRC diagnostics.
 
 ---
 

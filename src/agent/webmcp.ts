@@ -23,11 +23,17 @@ type ModelContext = {
     tool: ToolDefinition,
     options?: { signal?: AbortSignal },
   ) => Promise<void>;
+  getTools?: () => Promise<Array<{ name: string; description: string; inputSchema?: Record<string, unknown> }>>;
+  executeTool?: (name: string, input?: Record<string, unknown>, options?: { signal?: AbortSignal }) => Promise<unknown>;
 };
 
 declare global {
   interface Window {
     __hardwareLabWebMcpController?: AbortController;
+    __webmcp_tools__?: ToolDefinition[];
+    webmcp_list_tools?: () => Array<{ name: string; description: string; inputSchema?: Record<string, unknown> }>;
+    webmcp_call_tool?: (name: string, input?: Record<string, unknown>) => Promise<unknown>;
+    modelContext?: ModelContext;
   }
 }
 
@@ -193,9 +199,6 @@ function inspectCircuit(
 }
 
 export async function registerWebMCPTools() {
-  const modelContext = (document as Document & { modelContext?: ModelContext }).modelContext;
-  if (!modelContext?.registerTool) return false;
-
   window.__hardwareLabWebMcpController?.abort();
   const controller = new AbortController();
   window.__hardwareLabWebMcpController = controller;
@@ -517,12 +520,57 @@ export async function registerWebMCPTools() {
     },
   ];
 
-  try {
-    for (const tool of tools) await modelContext.registerTool(tool, options);
-    return true;
-  } catch (error) {
-    console.warn('[WebMCP] Tool registration failed:', error);
-    controller.abort();
-    return false;
+  // 1. Expose universal browser agent discovery & execution functions on window
+  window.__webmcp_tools__ = tools;
+  window.webmcp_list_tools = () =>
+    tools.map((t) => ({
+      name: t.name,
+      description: t.description,
+      inputSchema: t.inputSchema,
+    }));
+  window.webmcp_call_tool = async (name: string, input: Record<string, unknown> = {}) => {
+    const tool = tools.find((t) => t.name === name);
+    if (!tool) throw new Error(`WebMCP tool "${name}" not found.`);
+    return tool.execute(input, options);
+  };
+
+  // 2. Polyfill ModelContext on document, window, and navigator according to WebMCP spec
+  const registered = new Map<string, ToolDefinition>();
+  for (const tool of tools) registered.set(tool.name, tool);
+
+  const polyfillModelContext: ModelContext = {
+    registerTool: async (tool: ToolDefinition) => {
+      registered.set(tool.name, tool);
+    },
+    getTools: async () =>
+      Array.from(registered.values()).map((t) => ({
+        name: t.name,
+        description: t.description,
+        inputSchema: t.inputSchema,
+      })),
+    executeTool: async (name: string, input: Record<string, unknown> = {}) => {
+      const tool = registered.get(name);
+      if (!tool) throw new Error(`Tool "${name}" not registered.`);
+      return tool.execute(input, options);
+    },
+  };
+
+  const doc = document as Document & { modelContext?: ModelContext };
+  const existingDocContext = doc.modelContext;
+  if (!doc.modelContext) doc.modelContext = polyfillModelContext;
+  if (!window.modelContext) window.modelContext = polyfillModelContext;
+  if (typeof navigator !== 'undefined' && !(navigator as unknown as { modelContext?: ModelContext }).modelContext) {
+    (navigator as unknown as { modelContext?: ModelContext }).modelContext = polyfillModelContext;
   }
+
+  // 3. Register on native context if provided by a WebMCP-capable browser
+  try {
+    if (existingDocContext?.registerTool) {
+      for (const tool of tools) await existingDocContext.registerTool(tool, options);
+    }
+  } catch (error) {
+    console.warn('[WebMCP] Native tool registration warning:', error);
+  }
+
+  return true;
 }

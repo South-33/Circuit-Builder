@@ -107,18 +107,18 @@ button { color: inherit; }
 .code-button.active { background: #2475d0; color: #fff; border-color: #2475d0; }
 
 .simulate-button {
-  border-radius: 22px;
-  padding: 0 17px;
-  min-width: 158px;
-  gap: 9px;
-  font-weight: 650;
-  border-width: 2px;
+  border-radius: 20px;
+  padding: 0 13px;
+  font-size: 12px;
+  gap: 6px;
+  font-weight: 600;
+  border-width: 1.5px;
   border-color: #aeb8c4;
 }
 .simulate-button:hover:not(:disabled) { background: #f6f8fa; }
 .simulate-button.running { color: #b42318; border-color: #e3a5a0; }
 .simulate-button.compiling { cursor: wait; opacity: .7; }
-.simulation-symbol { width: 13px; text-align: center; font-size: 11px; }
+.simulation-symbol { width: 11px; text-align: center; font-size: 10px; }
 
 .main-area { height: calc(100% - 58px); display: flex; min-width: 0; }
 

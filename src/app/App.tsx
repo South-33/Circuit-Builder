@@ -1431,6 +1431,26 @@ export default function App() {
           </div>
         </div>
         <div className="toolbar-group toolbar-right">
+          {viewMode === 'circuits' && (
+            <>
+              <button type="button" className={`code-button${codeOpen ? ' active' : ''}`} onClick={() => setCodeOpen(!codeOpen)}>
+                <span>{'</>'}</span> Code
+              </button>
+              <button
+                type="button"
+                className={`simulate-button ${state.simulation.status}`}
+                onClick={toggleSimulation}
+                disabled={state.simulation.status === 'compiling'}
+              >
+                <span className="simulation-symbol" aria-hidden="true">{state.simulation.status === 'running' ? '■' : '▶'}</span>
+                {state.simulation.status === 'running'
+                  ? 'Stop Simulation'
+                  : state.simulation.status === 'compiling'
+                    ? 'Compiling...'
+                    : 'Start Simulation'}
+              </button>
+            </>
+          )}
           <div className="view-mode-switcher">
             <button
               type="button"
@@ -1460,26 +1480,6 @@ export default function App() {
               <span>Components</span>
             </button>
           </div>
-          {viewMode === 'circuits' && (
-            <>
-              <button type="button" className={`code-button${codeOpen ? ' active' : ''}`} onClick={() => setCodeOpen(!codeOpen)}>
-                <span>{'</>'}</span> Code
-              </button>
-              <button
-                type="button"
-                className={`simulate-button ${state.simulation.status}`}
-                onClick={toggleSimulation}
-                disabled={state.simulation.status === 'compiling'}
-              >
-                <span className="simulation-symbol" aria-hidden="true">{state.simulation.status === 'running' ? '■' : '▶'}</span>
-                {state.simulation.status === 'running'
-                  ? 'Stop Simulation'
-                  : state.simulation.status === 'compiling'
-                    ? 'Compiling...'
-                    : 'Start Simulation'}
-              </button>
-            </>
-          )}
         </div>
       </header>
 

@@ -25,6 +25,13 @@ import { getBreadboardGeometry, isBreadboardType } from '../breadboard/geometry'
 import { endpointPoint, partRect, pinExitDirection } from '../wires/geometry';
 import { connectionPolyline, nearestPointOnPolyline, roundedPath, snapPoint, type WireAxis } from '../wires/path';
 import type { CircuitConnection, CircuitPart, PartType, WirePoint } from '../circuit/types';
+import { highlightArduinoCode } from './highlight';
+import { ComponentsView } from './ComponentsView';
+import { SchematicView } from './SchematicView';
+import { NotesLayer, type CanvasNote } from './Notes';
+import { BlocksWorkspace } from './BlocksWorkspace';
+
+export type ViewMode = 'circuits' | 'schematic' | 'components';
 
 const WIRE_COLORS = [
   { key: '0', name: 'Black', color: '#000000' },
@@ -88,6 +95,47 @@ function FrameIcon() {
   return (
     <svg viewBox="0 0 24 24" aria-hidden="true" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
       <path d="M8 3H3v5M16 3h5v5M8 21H3v-5M16 21h5v-5" />
+    </svg>
+  );
+}
+
+function CircuitsIcon() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true" width="15" height="15" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="4" y="4" width="16" height="16" rx="2" />
+      <rect x="9" y="9" width="6" height="6" />
+      <path d="M9 1v3M15 1v3M9 20v3M15 20v3M20 9h3M20 14h3M1 9h3M1 14h3" />
+    </svg>
+  );
+}
+
+function SchematicIcon() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true" width="15" height="15" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M3 12h4l3-8 4 16 3-8h4" />
+    </svg>
+  );
+}
+
+function NoteIcon() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+      <line x1="9" y1="8" x2="15" y2="8" />
+      <line x1="9" y1="12" x2="13" y2="12" />
+    </svg>
+  );
+}
+
+function ToggleNotesIcon({ visible }: { visible: boolean }) {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+      {visible ? (
+        <circle cx="12" cy="10" r="2.5" fill="currentColor" />
+      ) : (
+        <path d="M3 3l18 18" stroke="currentColor" strokeWidth="2" />
+      )}
     </svg>
   );
 }
@@ -508,9 +556,20 @@ function Wires({
   );
 }
 
-function ComponentTray({ onAdd }: { onAdd: (type: PartType) => void }) {
+function ComponentTray({
+  onAdd,
+  width,
+  onResizeStart,
+  onToggleCollapse,
+}: {
+  onAdd: (type: PartType) => void;
+  width?: number;
+  onResizeStart?: (e: React.PointerEvent) => void;
+  onToggleCollapse?: () => void;
+}) {
   const [search, setSearch] = useState('');
   const [category, setCategory] = useState<'All' | PartCategory>('All');
+  const [categoryOpen, setCategoryOpen] = useState(false);
   const categories: Array<'All' | PartCategory> = ['All', 'Basic', 'Input', 'Output', 'Sensors', 'Motion', 'Boards', 'Layout'];
   const query = search.trim().toLowerCase();
   const filtered = PART_ORDER.filter((type) => {
@@ -522,19 +581,48 @@ function ComponentTray({ onAdd }: { onAdd: (type: PartType) => void }) {
   });
 
   return (
-    <aside className="side-panel components-panel">
+    <aside className="side-panel components-panel" style={{ width: width ? `${width}px` : undefined }}>
+      {onResizeStart && <div className="panel-resize-handle" onPointerDown={onResizeStart} title="Drag to resize panel" />}
       <div className="panel-heading">
-        <span>Components</span>
-        <span className="panel-count">{filtered.length}</span>
+        <div className="heading-left">
+          <span>Components</span>
+          <span className="panel-count">{filtered.length}</span>
+        </div>
+        {onToggleCollapse && (
+          <button type="button" className="panel-toggle-close" onClick={onToggleCollapse} title="Collapse sidebar" aria-label="Collapse sidebar">
+            ›
+          </button>
+        )}
       </div>
-      <select
-        className="component-filter"
-        value={category}
-        onChange={(event) => setCategory(event.target.value as 'All' | PartCategory)}
-        aria-label="Component category"
-      >
-        {categories.map((value) => <option value={value} key={value}>{value}</option>)}
-      </select>
+      <div className="category-dropdown-wrap">
+        <button
+          type="button"
+          className="category-dropdown-trigger"
+          onClick={() => setCategoryOpen(!categoryOpen)}
+          aria-label="Filter components by category"
+        >
+          <span>{category}</span>
+          <span className={`category-caret${categoryOpen ? ' open' : ''}`} />
+        </button>
+        {categoryOpen && (
+          <div className="category-dropdown-menu">
+            {categories.map((val) => (
+              <button
+                type="button"
+                key={val}
+                className={category === val ? 'active' : ''}
+                onClick={() => {
+                  setCategory(val);
+                  setCategoryOpen(false);
+                }}
+              >
+                <span>{val}</span>
+                {category === val && <span className="check-mark">✓</span>}
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
       <div className="component-search-wrap">
         <span className="search-icon">⌕</span>
         <input
@@ -567,69 +655,258 @@ function CodePanel({
   board,
   draft,
   setDraft,
+  width,
+  onResizeStart,
+  onToggleCollapse,
 }: {
   board: CircuitPart | undefined;
   draft: string;
   setDraft: (code: string) => void;
+  width?: number;
+  onResizeStart?: (e: React.PointerEvent) => void;
+  onToggleCollapse?: () => void;
 }) {
   const state = useCircuit();
   const [scrollTop, setScrollTop] = useState(0);
+  const [scrollLeft, setScrollLeft] = useState(0);
+  const [codeMode, setCodeMode] = useState<'Blocks' | 'Blocks + Text' | 'Text'>('Text');
+  const [modeMenuOpen, setModeMenuOpen] = useState(false);
+  const [fontSize, setFontSize] = useState<'11px' | '12.5px' | '14px'>('12.5px');
+  const [fontMenuOpen, setFontMenuOpen] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const preRef = useRef<HTMLPreElement | null>(null);
   const lines = draft.split('\n');
   const focusCode = state.focus?.code;
   const codeFocus = focusCode?.boardId === board?.id ? focusCode : undefined;
-  const lineHeight = 20;
+  const lineHeight = fontSize === '14px' ? 22 : fontSize === '11px' ? 18 : 20;
+
+  const downloadIno = () => {
+    const blob = new Blob([draft], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `${board?.id ?? 'sketch'}.ino`;
+    link.click();
+    URL.revokeObjectURL(url);
+  };
 
   useEffect(() => {
     if (!codeFocus || !textareaRef.current) return;
     const targetTop = Math.max(0, (codeFocus.startLine - 3) * lineHeight);
     textareaRef.current.scrollTo({ top: targetTop, behavior: 'smooth' });
-  }, [codeFocus]);
+  }, [codeFocus, lineHeight]);
+
+  const handleScroll = (event: React.UIEvent<HTMLTextAreaElement>) => {
+    const top = event.currentTarget.scrollTop;
+    const left = event.currentTarget.scrollLeft;
+    setScrollTop(top);
+    setScrollLeft(left);
+    if (preRef.current) {
+      preRef.current.scrollTop = top;
+      preRef.current.scrollLeft = left;
+    }
+  };
+
+  const handleKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (event.key === 'Tab') {
+      event.preventDefault();
+      const textarea = event.currentTarget;
+      const start = textarea.selectionStart;
+      const end = textarea.selectionEnd;
+      const val = textarea.value;
+      const next = val.substring(0, start) + '  ' + val.substring(end);
+      setDraft(next);
+      requestAnimationFrame(() => {
+        textarea.selectionStart = textarea.selectionEnd = start + 2;
+      });
+    }
+  };
 
   if (!board) {
     return (
-      <aside className="side-panel code-panel empty-code-panel">
-        <div className="panel-heading">Code</div>
+      <aside className="side-panel code-panel empty-code-panel" style={{ width: width ? `${width}px` : undefined }}>
+        {onResizeStart && <div className="panel-resize-handle" onPointerDown={onResizeStart} title="Drag to resize panel" />}
+        <div className="panel-heading">
+          <div className="heading-left">
+            <span>Code</span>
+          </div>
+          {onToggleCollapse && (
+            <button type="button" className="panel-toggle-close" onClick={onToggleCollapse} title="Collapse sidebar" aria-label="Collapse sidebar">
+              ›
+            </button>
+          )}
+        </div>
         <p>Add an Arduino Uno to edit a sketch.</p>
       </aside>
     );
   }
 
   return (
-    <aside className="side-panel code-panel">
+    <aside className="side-panel code-panel" style={{ width: width ? `${width}px` : undefined }}>
+      {onResizeStart && <div className="panel-resize-handle" onPointerDown={onResizeStart} title="Drag to resize panel" />}
       <div className="code-panel-top">
-        <span>{board.id}</span>
-        <span>Arduino C++</span>
-      </div>
-      <div className="editor-shell">
-        <div className="line-numbers" style={{ transform: `translateY(${-scrollTop}px)` }}>
-          {lines.map((_, index) => {
-            const line = index + 1;
-            const active = codeFocus && line >= codeFocus.startLine && line <= codeFocus.endLine;
-            return <div key={line} className={active ? 'focused-line-number' : ''}>{line}</div>;
-          })}
+        <div className="code-topbar-left">
+          {/* Mode Dropdown (Blocks / Blocks + Text / Text) */}
+          <div className="code-mode-dropdown-wrap">
+            <button
+              type="button"
+              className="code-mode-btn"
+              onClick={() => setModeMenuOpen(!modeMenuOpen)}
+              aria-label="Code Editor Mode"
+            >
+              <span>{codeMode}</span>
+              <span className={`dropdown-caret${modeMenuOpen ? ' open' : ''}`} />
+            </button>
+            {modeMenuOpen && (
+              <div className="code-mode-menu">
+                <div className="menu-header-label">EDIT MODE</div>
+                {(['Blocks', 'Blocks + Text', 'Text'] as const).map((m) => (
+                  <button
+                    type="button"
+                    key={m}
+                    className={codeMode === m ? 'active' : ''}
+                    onClick={() => { setCodeMode(m); setModeMenuOpen(false); }}
+                  >
+                    {m}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* Download sketch button */}
+          <button type="button" className="code-tool-btn" onClick={downloadIno} title="Download .ino sketch" aria-label="Download sketch">
+            <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+          </button>
+
+          {/* Library button */}
+          <button type="button" className="code-tool-btn" title="Include Libraries" aria-label="Include Libraries">
+            <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" strokeWidth="2"><path d="M4 19.5v-15A2.5 2.5 0 0 1 6.5 2H20v20H6.5a2.5 2.5 0 0 1-2.5-2.5Z"/><path d="M6 6h10M6 10h10"/></svg>
+          </button>
+
+          {/* Font Size Adjuster (A A) */}
+          <div className="code-font-dropdown-wrap">
+            <button
+              type="button"
+              className="code-tool-btn font-btn"
+              onClick={() => setFontMenuOpen(!fontMenuOpen)}
+              title="Font size"
+              aria-label="Font size"
+            >
+              <span className="font-icon-label">A<span style={{ fontSize: '13px' }}>A</span></span>
+              <span className={`dropdown-caret${fontMenuOpen ? ' open' : ''}`} />
+            </button>
+            {fontMenuOpen && (
+              <div className="code-font-menu">
+                <button type="button" className={fontSize === '11px' ? 'active' : ''} onClick={() => { setFontSize('11px'); setFontMenuOpen(false); }}>Small</button>
+                <button type="button" className={fontSize === '12.5px' ? 'active' : ''} onClick={() => { setFontSize('12.5px'); setFontMenuOpen(false); }}>Medium</button>
+                <button type="button" className={fontSize === '14px' ? 'active' : ''} onClick={() => { setFontSize('14px'); setFontMenuOpen(false); }}>Large</button>
+              </div>
+            )}
+          </div>
         </div>
-        {codeFocus && (
-          <div
-            className="code-focus-band"
-            style={{
-              top: (codeFocus.startLine - 1) * lineHeight - scrollTop,
-              height: (codeFocus.endLine - codeFocus.startLine + 1) * lineHeight,
+
+        <div className="code-topbar-right">
+          <div className="board-selector-pill">
+            <span>{board.id} ({PART_DEFINITIONS[board.type]?.name ?? 'Arduino Uno'})</span>
+          </div>
+          {onToggleCollapse && (
+            <button type="button" className="panel-toggle-close" onClick={onToggleCollapse} title="Collapse sidebar" aria-label="Collapse sidebar">
+              ›
+            </button>
+          )}
+        </div>
+      </div>
+
+      {codeMode === 'Blocks' ? (
+        <BlocksWorkspace />
+      ) : codeMode === 'Blocks + Text' ? (
+        <div className="split-code-container">
+          <div className="split-blocks-side">
+            <BlocksWorkspace />
+          </div>
+          <div className="split-text-side">
+            <div className="editor-shell">
+              <div className="line-numbers" style={{ transform: `translateY(${-scrollTop}px)`, fontSize, lineHeight: `${lineHeight}px` }}>
+                {lines.map((_, index) => {
+                  const line = index + 1;
+                  const active = codeFocus && line >= codeFocus.startLine && line <= codeFocus.endLine;
+                  return <div key={line} className={active ? 'focused-line-number' : ''}>{line}</div>;
+                })}
+              </div>
+              {codeFocus && (
+                <div
+                  className="code-focus-band"
+                  style={{
+                    top: (codeFocus.startLine - 1) * lineHeight - scrollTop,
+                    height: (codeFocus.endLine - codeFocus.startLine + 1) * lineHeight,
+                  }}
+                />
+              )}
+              <pre
+                ref={preRef}
+                className="code-highlight"
+                aria-hidden="true"
+                style={{ transform: `translate(${-scrollLeft}px, ${-scrollTop}px)`, fontSize, lineHeight: `${lineHeight}px` }}
+                dangerouslySetInnerHTML={{ __html: highlightArduinoCode(draft) + '\n' }}
+              />
+              <textarea
+                ref={textareaRef}
+                className="code-editor"
+                spellCheck={false}
+                style={{ fontSize, lineHeight: `${lineHeight}px` }}
+                value={draft}
+                onChange={(event) => setDraft(event.target.value)}
+                onScroll={handleScroll}
+                onKeyDown={handleKeyDown}
+                onBlur={() => {
+                  if (board.code !== draft) circuitStore.setCode(board.id, draft);
+                }}
+              />
+            </div>
+          </div>
+        </div>
+      ) : (
+        <div className="editor-shell">
+          <div className="line-numbers" style={{ transform: `translateY(${-scrollTop}px)`, fontSize, lineHeight: `${lineHeight}px` }}>
+            {lines.map((_, index) => {
+              const line = index + 1;
+              const active = codeFocus && line >= codeFocus.startLine && line <= codeFocus.endLine;
+              return <div key={line} className={active ? 'focused-line-number' : ''}>{line}</div>;
+            })}
+          </div>
+          {codeFocus && (
+            <div
+              className="code-focus-band"
+              style={{
+                top: (codeFocus.startLine - 1) * lineHeight - scrollTop,
+                height: (codeFocus.endLine - codeFocus.startLine + 1) * lineHeight,
+              }}
+            />
+          )}
+          <pre
+            ref={preRef}
+            className="code-highlight"
+            aria-hidden="true"
+            style={{ transform: `translate(${-scrollLeft}px, ${-scrollTop}px)`, fontSize, lineHeight: `${lineHeight}px` }}
+            dangerouslySetInnerHTML={{ __html: highlightArduinoCode(draft) + '\n' }}
+          />
+          <textarea
+            ref={textareaRef}
+            className="code-editor"
+            spellCheck={false}
+            style={{ fontSize, lineHeight: `${lineHeight}px` }}
+            value={draft}
+            onChange={(event) => setDraft(event.target.value)}
+            onScroll={handleScroll}
+            onKeyDown={handleKeyDown}
+            onBlur={() => {
+              if (board.code !== draft) circuitStore.setCode(board.id, draft);
             }}
           />
-        )}
-        <textarea
-          ref={textareaRef}
-          className="code-editor"
-          spellCheck={false}
-          value={draft}
-          onChange={(event) => setDraft(event.target.value)}
-          onScroll={(event) => setScrollTop(event.currentTarget.scrollTop)}
-          onBlur={() => {
-            if (board.code !== draft) circuitStore.setCode(board.id, draft);
-          }}
-        />
-      </div>
+        </div>
+      )}
+
       <div className="serial-monitor">
         <div className="serial-title">Serial Monitor</div>
         <pre>{state.simulation.serialOutput || ' '}</pre>
@@ -830,6 +1107,7 @@ function BomModal({ onClose }: { onClose: () => void }) {
 export default function App() {
   const state = useCircuit();
   const canvasRef = useRef<HTMLDivElement | null>(null);
+  const [viewMode, setViewMode] = useState<ViewMode>('circuits');
   const [codeOpen, setCodeOpen] = useState(false);
   const [examplesOpen, setExamplesOpen] = useState(false);
   const [bomOpen, setBomOpen] = useState(false);
@@ -837,6 +1115,10 @@ export default function App() {
   const [wirePointer, setWirePointer] = useState<WirePoint | null>(null);
   const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
   const [isPanning, setIsPanning] = useState(false);
+  const [notes, setNotes] = useState<CanvasNote[]>([]);
+  const [notesVisible, setNotesVisible] = useState(true);
+  const [panelWidth, setPanelWidth] = useState(380);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const panRef = useRef<{ pointerId: number; startX: number; startY: number; scrollLeft: number; scrollTop: number } | null>(null);
   const [activeWireColor, setActiveWireColor] = useState(() => {
     try { return localStorage.getItem(WIRE_COLOR_STORAGE_KEY) || DEFAULT_WIRE_COLOR; } catch { return DEFAULT_WIRE_COLOR; }
@@ -859,12 +1141,55 @@ export default function App() {
     if (selected) circuitStore.setConnectionColor(selected.id, color);
   }, []);
 
+  const addNote = useCallback(() => {
+    const canvas = canvasRef.current;
+    const noteX = canvas ? canvas.scrollLeft + canvas.clientWidth / 2 - 100 : 350;
+    const noteY = canvas ? canvas.scrollTop + canvas.clientHeight / 2 - 60 : 220;
+    const newNote: CanvasNote = {
+      id: `note_${Date.now()}`,
+      x: Math.round(noteX / 10) * 10,
+      y: Math.round(noteY / 10) * 10,
+      text: 'Write your note here.',
+      collapsed: false,
+    };
+    setNotes((prev) => [...prev, newNote]);
+    setNotesVisible(true);
+  }, []);
+
+  const updateNote = useCallback((id: string, partial: Partial<CanvasNote>) => {
+    setNotes((prev) => prev.map((n) => n.id === id ? { ...n, ...partial } : n));
+  }, []);
+
+  const deleteNote = useCallback((id: string) => {
+    setNotes((prev) => prev.filter((n) => n.id !== id));
+  }, []);
+
+  const startResize = useCallback((e: React.PointerEvent) => {
+    e.preventDefault();
+    const startX = e.clientX;
+    const startW = panelWidth;
+    const handlePointerMove = (moveEvent: PointerEvent) => {
+      const delta = startX - moveEvent.clientX;
+      const nextW = Math.max(280, Math.min(800, startW + delta));
+      setPanelWidth(nextW);
+    };
+    const handlePointerUp = () => {
+      window.removeEventListener('pointermove', handlePointerMove);
+      window.removeEventListener('pointerup', handlePointerUp);
+    };
+    window.addEventListener('pointermove', handlePointerMove);
+    window.addEventListener('pointerup', handlePointerUp);
+  }, [panelWidth]);
+
   useEffect(() => {
     setDraft(board?.code ?? '');
   }, [board?.id, board?.code]);
 
   useEffect(() => {
-    if (state.focus?.code) setCodeOpen(true);
+    if (state.focus?.code) {
+      setCodeOpen(true);
+      setSidebarCollapsed(false);
+    }
   }, [state.focus?.code]);
 
   useEffect(() => {
@@ -878,7 +1203,10 @@ export default function App() {
     const handleKey = (event: KeyboardEvent) => {
       const target = event.target as HTMLElement;
       if (target.matches('textarea,input,select')) return;
-      if (event.key >= '0' && event.key <= '9') {
+      if (event.shiftKey && event.key.toLowerCase() === 'n') {
+        event.preventDefault();
+        setNotesVisible((v) => !v);
+      } else if (event.key >= '0' && event.key <= '9') {
         const option = WIRE_COLORS.find((c) => c.key === event.key);
         if (option) chooseWireColor(option.color);
       } else if (event.key.toLowerCase() === 'r' && state.selectedId) {
@@ -907,17 +1235,14 @@ export default function App() {
   }, [state.selectedId, state.parts, chooseWireColor]);
 
   const addPart = useCallback((type: PartType) => {
-    if (state.simulation.status === 'running' || state.simulation.status === 'compiling') return;
-    const canvas = canvasRef.current;
-    const bounds = getPartBounds(type);
-    const left = canvas
-      ? canvas.scrollLeft + canvas.clientWidth / 2 - bounds.width / 2
-      : 250;
-    const top = canvas
-      ? canvas.scrollTop + canvas.clientHeight / 2 - bounds.height / 2
-      : 180;
-    circuitStore.addPart(type, Math.max(20, left), Math.max(20, top));
-  }, [state.simulation.status]);
+    const snap = circuitStore.getSnapshot();
+    const existing = snap.parts.filter((candidate) => candidate.type === type).length;
+    const def = PART_DEFINITIONS[type];
+    const id = `${def.idPrefix}${existing + 1}`;
+    const left = Math.round((WORKSPACE_WIDTH - def.naturalSize.width) / 20) * 10;
+    const top = Math.round((WORKSPACE_HEIGHT - def.naturalSize.height) / 20) * 10;
+    circuitStore.addPart(type, { left, top, id });
+  }, []);
 
   const handlePinClick = useCallback((part: CircuitPart, pin: string) => {
     if (state.simulation.status !== 'stopped' && state.simulation.status !== 'error') return;
@@ -1053,17 +1378,26 @@ export default function App() {
           <button type="button" className="icon-button" onClick={() => circuitStore.undo()} disabled={!circuitStore.canUndo()} title="Undo (Ctrl+Z)" aria-label="Undo"><UndoIcon /></button>
           <button type="button" className="icon-button" onClick={() => circuitStore.redo()} disabled={!circuitStore.canRedo()} title="Redo (Ctrl+Y)" aria-label="Redo"><RedoIcon /></button>
           <div className="toolbar-divider" />
-          <WireColorTool color={shownWireColor} onChange={chooseWireColor} />
           <button
             type="button"
-            className={`bom-button${bomOpen ? ' active' : ''}`}
-            onClick={() => setBomOpen(!bomOpen)}
-            title="Component List (BOM)"
-            aria-label="Component list"
+            className="icon-button"
+            onClick={addNote}
+            title="Add note"
+            aria-label="Add note"
           >
-            <BomIcon />
-            <span>Components</span>
+            <NoteIcon />
           </button>
+          <button
+            type="button"
+            className={`icon-button${notesVisible ? '' : ' notes-hidden'}`}
+            onClick={() => setNotesVisible((v) => !v)}
+            title="Toggle notes visibility (Shift + N)"
+            aria-label="Toggle notes visibility"
+          >
+            <ToggleNotesIcon visible={notesVisible} />
+          </button>
+          <div className="toolbar-divider" />
+          <WireColorTool color={shownWireColor} onChange={chooseWireColor} />
           <div className="examples-wrap">
             <button type="button" className="examples-button" onClick={() => setExamplesOpen((open) => !open)}>
               Examples
@@ -1085,36 +1419,74 @@ export default function App() {
           </div>
         </div>
         <div className="toolbar-group toolbar-right">
-          <button type="button" className={`code-button${codeOpen ? ' active' : ''}`} onClick={() => setCodeOpen(!codeOpen)}>
-            <span>{'</>'}</span> Code
-          </button>
-          <button
-            type="button"
-            className={`simulate-button ${state.simulation.status}`}
-            onClick={toggleSimulation}
-            disabled={state.simulation.status === 'compiling'}
-          >
-            <span className="simulation-symbol" aria-hidden="true">{state.simulation.status === 'running' ? '■' : '▶'}</span>
-            {state.simulation.status === 'running'
-              ? 'Stop Simulation'
-              : state.simulation.status === 'compiling'
-                ? 'Compiling...'
-                : 'Start Simulation'}
-          </button>
+          <div className="view-mode-switcher">
+            <button
+              type="button"
+              className={`view-mode-btn${viewMode === 'circuits' ? ' active' : ''}`}
+              onClick={() => setViewMode('circuits')}
+              title="Circuits View"
+            >
+              <CircuitsIcon />
+              <span>Circuits</span>
+            </button>
+            <button
+              type="button"
+              className={`view-mode-btn${viewMode === 'schematic' ? ' active' : ''}`}
+              onClick={() => setViewMode('schematic')}
+              title="Schematic View"
+            >
+              <SchematicIcon />
+              <span>Schematic</span>
+            </button>
+            <button
+              type="button"
+              className={`view-mode-btn${viewMode === 'components' ? ' active' : ''}`}
+              onClick={() => setViewMode('components')}
+              title="Component List"
+            >
+              <BomIcon />
+              <span>Components</span>
+            </button>
+          </div>
+          {viewMode === 'circuits' && (
+            <>
+              <button type="button" className={`code-button${codeOpen ? ' active' : ''}`} onClick={() => setCodeOpen(!codeOpen)}>
+                <span>{'</>'}</span> Code
+              </button>
+              <button
+                type="button"
+                className={`simulate-button ${state.simulation.status}`}
+                onClick={toggleSimulation}
+                disabled={state.simulation.status === 'compiling'}
+              >
+                <span className="simulation-symbol" aria-hidden="true">{state.simulation.status === 'running' ? '■' : '▶'}</span>
+                {state.simulation.status === 'running'
+                  ? 'Stop Simulation'
+                  : state.simulation.status === 'compiling'
+                    ? 'Compiling...'
+                    : 'Start Simulation'}
+              </button>
+            </>
+          )}
         </div>
       </header>
 
-      <main className="main-area">
-        <div className="canvas-stage">
-          <div
-            ref={canvasRef}
-            className={`canvas-scroll${isPanning ? ' panning' : ''}`}
-            onWheel={(event) => {
-              event.preventDefault();
-              event.currentTarget.scrollLeft += event.deltaX;
-              event.currentTarget.scrollTop += event.deltaY;
-            }}
-            onPointerMove={(event) => {
+      {viewMode === 'schematic' ? (
+        <SchematicView parts={state.parts} connections={state.connections} />
+      ) : viewMode === 'components' ? (
+        <ComponentsView parts={state.parts} />
+      ) : (
+        <main className="main-area">
+          <div className="canvas-stage">
+            <div
+              ref={canvasRef}
+              className={`canvas-scroll${isPanning ? ' panning' : ''}`}
+              onWheel={(event) => {
+                event.preventDefault();
+                event.currentTarget.scrollLeft += event.deltaX;
+                event.currentTarget.scrollTop += event.deltaY;
+              }}
+              onPointerMove={(event) => {
               if (wireDraft) {
                 const point = canvasPoint(event);
                 if (point) setWirePointer(point);
@@ -1196,20 +1568,51 @@ export default function App() {
                 {state.simulation.error}
               </button>
             )}
+            <NotesLayer
+              notes={notes}
+              visible={notesVisible}
+              onUpdateNote={updateNote}
+              onDeleteNote={deleteNote}
+            />
             <Diagnostics open={diagnosticsOpen} setOpen={setDiagnosticsOpen} />
             </div>
           </div>
           <div className="canvas-tools">
             <button type="button" className="frame-button" onClick={frameCircuit} title="Frame circuit" aria-label="Frame circuit"><FrameIcon /></button>
-            <WireColorTool color={shownWireColor} onChange={chooseWireColor} />
           </div>
           <SelectionBar selectedId={state.selectedId} />
+          {sidebarCollapsed && (
+            <button
+              type="button"
+              className="reopen-sidebar-btn"
+              onClick={() => setSidebarCollapsed(false)}
+              title="Expand panel"
+              aria-label="Expand panel"
+            >
+              ‹ {codeOpen ? 'Code' : 'Components'}
+            </button>
+          )}
         </div>
 
-        {codeOpen
-          ? <CodePanel board={board} draft={draft} setDraft={setDraft} />
-          : <ComponentTray onAdd={addPart} />}
+        {!sidebarCollapsed && (
+          codeOpen
+            ? <CodePanel
+                board={board}
+                draft={draft}
+                setDraft={setDraft}
+                width={panelWidth}
+                onResizeStart={startResize}
+                onToggleCollapse={() => setSidebarCollapsed(true)}
+              />
+            : <ComponentTray
+                onAdd={addPart}
+                width={panelWidth}
+                onResizeStart={startResize}
+                onToggleCollapse={() => setSidebarCollapsed(true)}
+              />
+        )}
       </main>
+      )}
       {bomOpen && <BomModal onClose={() => setBomOpen(false)} />}
     </div>
   );

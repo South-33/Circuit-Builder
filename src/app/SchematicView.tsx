@@ -1,6 +1,7 @@
 ﻿import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { CircuitConnection, CircuitPart } from '../circuit/types';
-import { extractSchematicNets, getSchematicSymbolDef, resolveSchematicPinCoordinate } from './schematicSymbols';
+import { getSchematicSymbolDef } from './schematicSymbols';
+import { computeSchematicInitialLayout, routeSchematicNets } from './schematicEngine';
 import { isBreadboardType } from '../breadboard/geometry';
 
 type PartPos = { left: number; top: number };
@@ -25,68 +26,26 @@ export function SchematicView({
     return parts.filter((p) => !isBreadboardType(p.type));
   }, [parts]);
 
-  const schematicNets = useMemo(() => {
-    return extractSchematicNets(parts, connections);
-  }, [parts, connections]);
-
-  // Compute smart default layout for components on the 1140x740 drawing area
+  // Compute smart initial positions matching Tinkercad schematic layout
   useEffect(() => {
     setPositions((prev) => {
+      const initial = computeSchematicInitialLayout(parts);
       const next = { ...prev };
       let changed = false;
 
-      let unoCount = 0;
-      let inputCount = 0;
-      let outputCount = 0;
-      let otherCount = 0;
-
-      for (const part of nonBreadboardParts) {
-        if (!next[part.id]) {
+      for (const [id, pos] of Object.entries(initial)) {
+        if (!next[id]) {
+          next[id] = pos;
           changed = true;
-          if (part.type === 'wokwi-arduino-uno') {
-            next[part.id] = { left: 460 + unoCount * 200, top: 180 + unoCount * 40 };
-            unoCount++;
-          } else if (
-            part.type.includes('motor') ||
-            part.type.includes('led') ||
-            part.type.includes('buzzer') ||
-            part.type.includes('relay')
-          ) {
-            next[part.id] = {
-              left: 780 + (outputCount % 2) * 160,
-              top: 100 + Math.floor(outputCount / 2) * 120,
-            };
-            outputCount++;
-          } else if (
-            part.type.includes('sensor') ||
-            part.type.includes('button') ||
-            part.type.includes('switch') ||
-            part.type.includes('potentiometer') ||
-            part.type.includes('keypad')
-          ) {
-            next[part.id] = {
-              left: 140 + (inputCount % 2) * 140,
-              top: 100 + Math.floor(inputCount / 2) * 110,
-            };
-            inputCount++;
-          } else {
-            next[part.id] = {
-              left: 140 + (otherCount % 3) * 130,
-              top: 480 + Math.floor(otherCount / 3) * 90,
-            };
-            otherCount++;
-          }
         }
       }
       return changed ? next : prev;
     });
-  }, [nonBreadboardParts]);
+  }, [parts]);
 
-  const currentDate = new Date().toLocaleDateString('en-US', {
-    month: 'numeric',
-    day: 'numeric',
-    year: 'numeric',
-  });
+  const { wires, powerMarkers } = useMemo(() => {
+    return routeSchematicNets(parts, connections, positions);
+  }, [parts, connections, positions]);
 
   const handlePrint = () => {
     window.print();
@@ -120,8 +79,8 @@ export function SchematicView({
     setPositions((prev) => ({
       ...prev,
       [draggingPartId]: {
-        left: Math.max(40, Math.min(1060, nextLeft)),
-        top: Math.max(40, Math.min(680, nextTop)),
+        left: Math.max(30, Math.min(1100, nextLeft)),
+        top: Math.max(30, Math.min(720, nextTop)),
       },
     }));
   };
@@ -177,7 +136,7 @@ export function SchematicView({
         <div className="schematic-header-left">
           <h2>Schematic View</h2>
           <span className="schematic-part-count">
-            {nonBreadboardParts.length} {nonBreadboardParts.length === 1 ? 'component' : 'components'} · {schematicNets.length} {schematicNets.length === 1 ? 'net' : 'nets'}
+            {nonBreadboardParts.length} {nonBreadboardParts.length === 1 ? 'component' : 'components'} · {wires.length} {wires.length === 1 ? 'net' : 'nets'}
           </span>
         </div>
         <div className="schematic-controls">
@@ -217,69 +176,48 @@ export function SchematicView({
             {/* Sheet background */}
             <rect x="0" y="0" width="1200" height="800" fill="#ffffff" />
 
-            {/* Red Engineering Outer & Inner Border */}
-            <rect x="24" y="24" width="1152" height="752" fill="none" stroke="#e06c75" strokeWidth="1.8" />
-            <rect x="32" y="32" width="1136" height="736" fill="none" stroke="#e06c75" strokeWidth="0.8" />
-
-            {/* Coordinate grid labels 1-6 Top & Bottom */}
-            {['1', '2', '3', '4', '5', '6'].map((num, i) => (
-              <React.Fragment key={num}>
-                <text x={32 + (i + 0.5) * (1136 / 6)} y="28" textAnchor="middle" fill="#e06c75" fontSize="10" fontWeight="bold" fontFamily="monospace">{num}</text>
-                <text x={32 + (i + 0.5) * (1136 / 6)} y="774" textAnchor="middle" fill="#e06c75" fontSize="10" fontWeight="bold" fontFamily="monospace">{num}</text>
-              </React.Fragment>
-            ))}
-
-            {/* Coordinate grid labels A-E Left & Right */}
-            {['A', 'B', 'C', 'D', 'E'].map((letter, i) => (
-              <React.Fragment key={letter}>
-                <text x="18" y={32 + (i + 0.5) * (736 / 5)} textAnchor="middle" fill="#e06c75" fontSize="10" fontWeight="bold" fontFamily="monospace">{letter}</text>
-                <text x="1182" y={32 + (i + 0.5) * (736 / 5)} textAnchor="middle" fill="#e06c75" fontSize="10" fontWeight="bold" fontFamily="monospace">{letter}</text>
-              </React.Fragment>
-            ))}
-
-            {/* Title block (Bottom-right engineering block) */}
-            <g transform="translate(868, 678)">
-              <rect x="0" y="0" width="300" height="90" fill="#fff" stroke="#e06c75" strokeWidth="1.2" />
-              <line x1="0" y1="30" x2="300" y2="30" stroke="#e06c75" strokeWidth="0.8" />
-              <line x1="0" y1="60" x2="300" y2="60" stroke="#e06c75" strokeWidth="0.8" />
-              <line x1="180" y1="60" x2="180" y2="90" stroke="#e06c75" strokeWidth="0.8" />
-              <text x="10" y="20" fill="#c92a2a" fontSize="11" fontWeight="bold" fontFamily="sans-serif">Title: Circuit Schematic</text>
-              <text x="10" y="48" fill="#555" fontSize="9.5" fontFamily="sans-serif">Date: {currentDate}</text>
-              <text x="190" y="78" fill="#555" fontSize="9.5" fontFamily="sans-serif">Sheet: 1/1</text>
-              <text x="10" y="78" fill="#888" fontSize="9.5" fontFamily="sans-serif">Made with Hardware Lab</text>
-            </g>
-
-            {/* Schematic Net Connections (Green wires) */}
+            {/* Schematic Net Connections (Tinkercad sea-green wires #5ab69b) */}
             <g className="schematic-nets">
-              {schematicNets.map((net) => {
-                const fromPart = parts.find((p) => p.id === net.fromPartId);
-                const toPart = parts.find((p) => p.id === net.toPartId);
-                if (!fromPart || !toPart) return null;
-
-                const fromPos = positions[fromPart.id] ?? { left: 100, top: 100 };
-                const toPos = positions[toPart.id] ?? { left: 100, top: 100 };
-
-                const start = resolveSchematicPinCoordinate(fromPart, net.fromPin, fromPos);
-                const end = resolveSchematicPinCoordinate(toPart, net.toPin, toPos);
-
-                const midX = Math.round((start.x + end.x) / 2);
-                const path = `M ${start.x} ${start.y} L ${midX} ${start.y} L ${midX} ${end.y} L ${end.x} ${end.y}`;
+              {wires.map((wire) => {
+                const d = wire.points.reduce((acc, pt, i) => `${acc} ${i === 0 ? 'M' : 'L'} ${pt.x} ${pt.y}`, '');
 
                 return (
-                  <g key={net.id} className="schematic-net-wire">
+                  <g key={wire.id} className="schematic-net-wire">
                     <path
-                      d={path}
+                      d={d}
                       fill="none"
-                      stroke="#2f9e44"
-                      strokeWidth="1.6"
+                      stroke="#5ab69b"
+                      strokeWidth="1.3"
                       strokeLinejoin="round"
                       strokeLinecap="round"
                     />
-                    <circle cx={start.x} cy={start.y} r="3" fill="#2f9e44" />
-                    <circle cx={end.x} cy={end.y} r="3" fill="#2f9e44" />
+                    {/* Junction dots */}
+                    <circle cx={wire.fromPos.x} cy={wire.fromPos.y} r="2.2" fill="#5ab69b" />
+                    <circle cx={wire.toPos.x} cy={wire.toPos.y} r="2.2" fill="#5ab69b" />
                   </g>
                 );
               })}
+            </g>
+
+            {/* Power Markers (U1_5V, U1_GND) */}
+            <g className="schematic-power-markers">
+              {powerMarkers.map((marker) => (
+                <g key={marker.id} transform={`translate(${marker.x}, ${marker.y})`}>
+                  {marker.direction === 'up' ? (
+                    <>
+                      <line x1="0" y1="0" x2="0" y2="-12" stroke="#b83232" strokeWidth="1.4" />
+                      <polygon points="0,-18 -4,-12 4,-12" fill="none" stroke="#b83232" strokeWidth="1.2" />
+                      <text x="0" y="-24" textAnchor="middle" fill="#999" fontSize="10" fontFamily="sans-serif">{marker.label}</text>
+                    </>
+                  ) : (
+                    <>
+                      <line x1="0" y1="0" x2="0" y2="12" stroke="#b83232" strokeWidth="1.4" />
+                      <polygon points="0,18 -4,12 4,12" fill="none" stroke="#b83232" strokeWidth="1.2" />
+                      <text x="0" y="30" textAnchor="middle" fill="#999" fontSize="10" fontFamily="sans-serif">{marker.label}</text>
+                    </>
+                  )}
+                </g>
+              ))}
             </g>
 
             {/* Schematic Symbols (Interactive & Draggable) */}

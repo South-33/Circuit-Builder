@@ -224,7 +224,7 @@ function PartPreview({ type }: { type: PartType }) {
     return <div className="mini-breadboard"><span /><span /><span /></div>;
   }
   if (type === 'dc-motor') {
-    return <img className="dc-motor-preview" src="/assets/fritzing/dc-motor.svg" alt="" />;
+    return <img className="dc-motor-preview" src="/assets/fritzing/dc-motor.svg" alt="" draggable={false} />;
   }
   if (definition.asset) {
     return (
@@ -237,14 +237,24 @@ function PartPreview({ type }: { type: PartType }) {
     );
   }
   if (!definition.tag) return null;
-  return createElement(definition.tag, {
-    ...definition.defaults,
-    style: {
-      transformOrigin: '0 0',
-      transform: `scale(${definition.previewScale})`,
-      pointerEvents: 'none',
-    },
-  });
+  const targetW = 66;
+  const targetH = 52;
+  const scale = Math.min(targetW / definition.naturalSize.width, targetH / definition.naturalSize.height) * 0.92;
+  return (
+    <div
+      className="preview-scaler"
+      style={{
+        width: definition.naturalSize.width,
+        height: definition.naturalSize.height,
+        transform: `scale(${scale})`,
+      }}
+    >
+      {createElement(definition.tag, {
+        ...definition.defaults,
+        style: { pointerEvents: 'none' },
+      })}
+    </div>
+  );
 }
 
 function PartOnCanvas({
@@ -513,7 +523,10 @@ function ComponentTray({ onAdd }: { onAdd: (type: PartType) => void }) {
 
   return (
     <aside className="side-panel components-panel">
-      <div className="panel-heading">Components</div>
+      <div className="panel-heading">
+        <span>Components</span>
+        <span className="panel-count">{filtered.length}</span>
+      </div>
       <select
         className="component-filter"
         value={category}
@@ -528,15 +541,21 @@ function ComponentTray({ onAdd }: { onAdd: (type: PartType) => void }) {
           className="component-search"
           value={search}
           onChange={(event) => setSearch(event.target.value)}
-          placeholder="Search"
+          placeholder="Search components..."
           aria-label="Search components"
         />
       </div>
       <div className="component-grid">
         {filtered.map((type) => (
-          <button className="component-card" type="button" key={type} onClick={() => onAdd(type)}>
+          <button
+            className="component-card"
+            type="button"
+            key={type}
+            onClick={() => onAdd(type)}
+            title={PART_DEFINITIONS[type].name}
+          >
             <span className="component-preview"><PartPreview type={type} /></span>
-            <span>{PART_DEFINITIONS[type].name}</span>
+            <span className="component-card-name">{PART_DEFINITIONS[type].name}</span>
           </button>
         ))}
       </div>

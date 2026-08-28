@@ -45,7 +45,7 @@ export function diagnoseCircuit(document: Pick<CircuitDocument, 'parts' | 'conne
     }
   }
 
-  for (const battery of document.parts.filter((part) => part.type === 'battery-9v')) {
+  for (const battery of document.parts.filter((part) => part.type === 'battery-9v' || part.type === 'battery-aa' || part.type === 'battery-coin-cell')) {
     const start = nodeRef(battery.id, '+');
     const connected = directlyConnectedNodes(graph, start);
     const key = [...connected].sort().join('|');
@@ -63,7 +63,7 @@ export function diagnoseCircuit(document: Pick<CircuitDocument, 'parts' | 'conne
         .map((connection) => connection.id);
       diagnostics.push({
         severity: 'error',
-        message: '9V Battery (+) is directly connected to Ground. This is a short circuit.',
+        message: `${battery.type === 'battery-9v' ? '9V Battery' : battery.type === 'battery-aa' ? 'AA Battery' : 'Coin Cell'} (+) is directly connected to Ground. This is a short circuit.`,
         itemIds: [battery.id, ...wireIds],
       });
     }
@@ -145,6 +145,19 @@ export function diagnoseCircuit(document: Pick<CircuitDocument, 'parts' | 'conne
           itemIds: [transistor.id, ...trace.connectionIds],
         });
       }
+    }
+  }
+
+  for (const transistor of document.parts.filter((part) => part.type === 'pnp-transistor')) {
+    const emitter = nodeRef(transistor.id, 'E');
+    const emitterPower = traceToPower(graph, emitter);
+    const emitterPositive = emitterPower.some((p) => isPositivePowerPin(p.part.type, p.pin));
+    if (!emitterPositive) {
+      diagnostics.push({
+        severity: 'warning',
+        message: 'PNP Transistor emitter (E) must be connected to positive power rail (VCC/5V) for high-side switching.',
+        itemIds: [transistor.id],
+      });
     }
   }
 

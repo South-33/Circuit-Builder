@@ -56,7 +56,7 @@ export function powerLevel(partOrTypeOrPin: CircuitPart | string, pinName?: stri
   const partType = typeof partOrTypeOrPin === 'string' ? partOrTypeOrPin : partOrTypeOrPin.type;
   const kind = classifyPowerPin(partType, pinName);
   if (kind === 'gnd') return false;
-  if (kind === '5v' || kind === '3v3' || kind === 'vin' || kind === '9v') return true;
+  if (kind === '5v' || kind === '3v3' || kind === 'vin' || kind === '9v' || kind === 'aa' || kind === 'coin') return true;
   return null;
 }
 

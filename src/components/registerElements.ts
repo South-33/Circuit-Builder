@@ -38,3 +38,7 @@ import '@wokwi/elements/dist/esm/lcd2004-element.js';
 import '@wokwi/elements/dist/esm/ssd1306-element.js';
 import '@wokwi/elements/dist/esm/ds1307-element.js';
 import '@wokwi/elements/dist/esm/mpu6050-element.js';
+import '@wokwi/elements/dist/esm/neopixel-element.js';
+import '@wokwi/elements/dist/esm/led-ring-element.js';
+import '@wokwi/elements/dist/esm/neopixel-matrix-element.js';
+import '@wokwi/elements/dist/esm/ks2e-m-dc5-element.js';

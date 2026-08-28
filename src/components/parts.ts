@@ -28,6 +28,23 @@ const BATTERY_9V_PINS: readonly PinInfo[] = [
   { name: '-', x: 95.628 * FRITZING_SCALE, y: 17.657 * FRITZING_SCALE, description: 'Negative terminal', signals: [{ type: 'power', voltage: 0 }] },
   { name: '+', x: 95.628 * FRITZING_SCALE, y: 10.458 * FRITZING_SCALE, description: 'Positive terminal', signals: [{ type: 'power', voltage: 9 }] },
 ];
+const PNP_TRANSISTOR_PINS: readonly PinInfo[] = [
+  { name: 'E', x: 1.08 * FRITZING_SCALE, y: 22.581 * FRITZING_SCALE, description: 'Emitter', signals: [] },
+  { name: 'B', x: 8.261 * FRITZING_SCALE, y: 22.581 * FRITZING_SCALE, description: 'Base', signals: [] },
+  { name: 'C', x: 15.447 * FRITZING_SCALE, y: 22.581 * FRITZING_SCALE, description: 'Collector', signals: [] },
+];
+const ZENER_DIODE_PINS: readonly PinInfo[] = [
+  { name: 'C', x: 0.511 * FRITZING_SCALE, y: 3.594 * FRITZING_SCALE, description: 'Cathode', signals: [] },
+  { name: 'A', x: 29.371 * FRITZING_SCALE, y: 3.708 * FRITZING_SCALE, description: 'Anode', signals: [] },
+];
+const BATTERY_AA_PINS: readonly PinInfo[] = [
+  { name: '-', x: 12, y: 58, description: 'Negative terminal', signals: [{ type: 'power', voltage: 0 }] },
+  { name: '+', x: 210, y: 58, description: 'Positive terminal', signals: [{ type: 'power', voltage: 3 }] },
+];
+const BATTERY_COIN_CELL_PINS: readonly PinInfo[] = [
+  { name: '+', x: 48, y: 15, description: 'Positive terminal', signals: [{ type: 'power', voltage: 3 }] },
+  { name: '-', x: 48, y: 95, description: 'Negative terminal', signals: [{ type: 'power', voltage: 0 }] },
+];
 
 export type PartDefinition = {
   type: PartType;
@@ -149,8 +166,8 @@ export const PART_DEFINITIONS: Record<PartType, PartDefinition> = {
     tag: 'wokwi-resistor',
     defaults: { value: '220' },
     previewScale: 1.25,
-    renderScale: 1,
-    naturalSize: { width: 59, height: 13 },
+    renderScale: 57.6 / 58.8,
+    naturalSize: { width: 58.8, height: 11.34 },
     simulated: true,
     pinSummary: 'Pins 1 and 2',
     breadboardMount: true,
@@ -777,6 +794,132 @@ export const PART_DEFINITIONS: Record<PartType, PartDefinition> = {
       { key: 'temperature', label: 'Temperature', kind: 'number', min: -40, max: 85, step: 0.5, unit: 'C' },
     ],
   },
+  'battery-aa': {
+    type: 'battery-aa',
+    name: 'AA Battery Pack',
+    idPrefix: 'batt',
+    category: 'Basic',
+    asset: '/assets/fritzing/battery-aa.svg',
+    defaults: { cells: 2 },
+    previewScale: 0.28,
+    renderScale: 0.85,
+    naturalSize: { width: 222.88, height: 116.64 },
+    simulated: true,
+    pinSummary: '+ (positive), - (GND). 1-4 cells (1.5V - 6.0V).',
+    properties: [{
+      key: 'cells', label: 'Cells', kind: 'select', options: [
+        { value: 1, label: '1 (1.5V)' }, { value: 2, label: '2 (3.0V)' }, { value: 3, label: '3 (4.5V)' }, { value: 4, label: '4 (6.0V)' },
+      ],
+    }],
+    keywords: ['battery', 'aa', 'power', 'dc'],
+  },
+  'battery-coin-cell': {
+    type: 'battery-coin-cell',
+    name: 'Coin Cell 3V',
+    idPrefix: 'batt',
+    category: 'Basic',
+    asset: '/assets/fritzing/battery-coin-cell.svg',
+    defaults: {},
+    previewScale: 0.45,
+    renderScale: 0.8,
+    naturalSize: { width: 96.95, height: 109.52 },
+    simulated: true,
+    pinSummary: '+ (3V positive), - (GND negative).',
+    keywords: ['battery', 'coin cell', 'cr2032', '3v', 'power'],
+  },
+  'pnp-transistor': {
+    type: 'pnp-transistor',
+    name: 'PNP Transistor',
+    idPrefix: 'q',
+    category: 'Basic',
+    asset: '/assets/fritzing/pnp-transistor.svg',
+    defaults: {},
+    previewScale: 0.8,
+    renderScale: 1,
+    naturalSize: { width: 22.036, height: 32.108 },
+    simulated: true,
+    pinSummary: 'E (emitter), B (base), C (collector). High-side switching.',
+    breadboardMount: true,
+    keywords: ['transistor', 'pnp', '2n3906', 'bjt', 'switch'],
+  },
+  'zener-diode': {
+    type: 'zener-diode',
+    name: 'Zener Diode',
+    idPrefix: 'd',
+    category: 'Basic',
+    asset: '/assets/fritzing/zener-diode.svg',
+    defaults: { voltage: 5.1 },
+    previewScale: 0.85,
+    renderScale: 1,
+    naturalSize: { width: 40.167, height: 9.721 },
+    simulated: true,
+    pinSummary: 'A (anode), C (cathode). 5.1V reverse breakdown regulation.',
+    breadboardMount: true,
+    properties: [{ key: 'voltage', label: 'Zener Voltage', kind: 'number', min: 2.4, max: 24, step: 0.1, unit: 'V' }],
+    keywords: ['diode', 'zener', '1n4733', 'voltage regulator'],
+  },
+  'wokwi-neopixel': {
+    type: 'wokwi-neopixel',
+    name: 'NeoPixel LED',
+    idPrefix: 'pixel',
+    category: 'Output',
+    tag: 'wokwi-neopixel',
+    defaults: {},
+    previewScale: 0.9,
+    renderScale: 1,
+    naturalSize: { width: 21.4, height: 18.9 },
+    simulated: true,
+    pinSummary: 'VDD (5V), DOUT, VSS (GND), DIN (data in). WS2812B protocol.',
+    keywords: ['neopixel', 'ws2812', 'ws2812b', 'rgb', 'addressable'],
+  },
+  'wokwi-led-ring': {
+    type: 'wokwi-led-ring',
+    name: 'NeoPixel Ring',
+    idPrefix: 'ring',
+    category: 'Output',
+    tag: 'wokwi-led-ring',
+    defaults: { pixels: 16 },
+    previewScale: 0.35,
+    renderScale: 0.85,
+    naturalSize: { width: 150, height: 150 },
+    simulated: true,
+    pinSummary: 'GND, VCC, DIN, DOUT. 16 addressable RGB LEDs.',
+    properties: [{ key: 'pixels', label: 'Pixels', kind: 'number', min: 8, max: 64, step: 4 }],
+    keywords: ['neopixel', 'led ring', 'ws2812', 'ws2812b', 'rgb'],
+  },
+  'wokwi-neopixel-matrix': {
+    type: 'wokwi-neopixel-matrix',
+    name: 'NeoPixel Matrix',
+    idPrefix: 'matrix',
+    category: 'Output',
+    tag: 'wokwi-neopixel-matrix',
+    defaults: { rows: 8, cols: 8 },
+    previewScale: 0.28,
+    renderScale: 0.75,
+    naturalSize: { width: 200, height: 200 },
+    simulated: true,
+    pinSummary: 'GND, VCC, DIN, DOUT. 8x8 addressable RGB LED matrix.',
+    properties: [
+      { key: 'rows', label: 'Rows', kind: 'number', min: 4, max: 16, step: 1 },
+      { key: 'cols', label: 'Cols', kind: 'number', min: 4, max: 16, step: 1 },
+    ],
+    keywords: ['neopixel', 'matrix', 'led matrix', 'ws2812', 'ws2812b', 'rgb'],
+  },
+  'wokwi-ks2e-m-dc5': {
+    type: 'wokwi-ks2e-m-dc5',
+    name: 'SPDT Relay',
+    idPrefix: 'relay',
+    category: 'Output',
+    tag: 'wokwi-ks2e-m-dc5',
+    defaults: {},
+    previewScale: 0.55,
+    renderScale: 1,
+    naturalSize: { width: 79.37, height: 37.79 },
+    simulated: true,
+    pinSummary: 'COIL1, COIL2, P1 (common), NO1, NC1, P2, NO2, NC2. 5V relay.',
+    breadboardMount: true,
+    keywords: ['relay', 'spdt', 'switch', 'isolation', 'ks2e'],
+  },
 };
 
 export const PART_ORDER: PartType[] = [...PART_TYPES];
@@ -789,8 +932,12 @@ export function getPartPins(partOrType: CircuitPart | PartType): PinInfo[] {
   if (breadboard) return [...breadboard.pins];
   if (type === 'dc-motor') return [...DC_MOTOR_PINS];
   if (type === 'npn-transistor') return [...NPN_TRANSISTOR_PINS];
+  if (type === 'pnp-transistor') return [...PNP_TRANSISTOR_PINS];
   if (type === 'rectifier-diode') return [...RECTIFIER_DIODE_PINS];
+  if (type === 'zener-diode') return [...ZENER_DIODE_PINS];
   if (type === 'battery-9v') return [...BATTERY_9V_PINS];
+  if (type === 'battery-aa') return [...BATTERY_AA_PINS];
+  if (type === 'battery-coin-cell') return [...BATTERY_COIN_CELL_PINS];
   const tag = PART_DEFINITIONS[type].tag;
   if (!tag || typeof document === 'undefined') return [];
   const element = document.createElement(tag) as PinElement & Record<string, unknown>;
@@ -1047,6 +1194,47 @@ export function resolvePinName(part: CircuitPart, requested: string): string | n
     if (['dp', 'dot', 'point'].includes(normalized)) return 'DP';
     if (['com.1', 'com1', 'c1'].includes(normalized)) return 'COM.1';
     if (['com.2', 'com2', 'c2', 'com', 'common'].includes(normalized)) return 'COM.2';
+  }
+
+  if (part.type === 'battery-aa' || part.type === 'battery-coin-cell') {
+    if (['+', 'pos', 'positive', 'vcc', 'v+', '1'].includes(normalized)) return '+';
+    if (['-', 'neg', 'negative', 'gnd', 'ground', '2'].includes(normalized)) return '-';
+  }
+
+  if (part.type === 'pnp-transistor') {
+    if (['e', 'emitter', '1'].includes(normalized)) return 'E';
+    if (['b', 'base', '2'].includes(normalized)) return 'B';
+    if (['c', 'collector', '3'].includes(normalized)) return 'C';
+  }
+
+  if (part.type === 'zener-diode') {
+    if (['c', 'cathode', 'neg', '-', 'k', '2'].includes(normalized)) return 'C';
+    if (['a', 'anode', 'pos', '+', '1'].includes(normalized)) return 'A';
+  }
+
+  if (part.type === 'wokwi-neopixel') {
+    if (['vdd', 'vcc', '5v', 'power', '+'].includes(normalized)) return 'VDD';
+    if (['dout', 'do', 'out', 'data_out'].includes(normalized)) return 'DOUT';
+    if (['vss', 'gnd', 'ground', '-'].includes(normalized)) return 'VSS';
+    if (['din', 'di', 'in', 'data', 'data_in'].includes(normalized)) return 'DIN';
+  }
+
+  if (part.type === 'wokwi-led-ring' || part.type === 'wokwi-neopixel-matrix') {
+    if (['gnd', 'vss', 'ground', '-'].includes(normalized)) return 'GND';
+    if (['vcc', 'vdd', '5v', 'power', '+'].includes(normalized)) return 'VCC';
+    if (['din', 'di', 'in', 'data', 'data_in'].includes(normalized)) return 'DIN';
+    if (['dout', 'do', 'out', 'data_out'].includes(normalized)) return 'DOUT';
+  }
+
+  if (part.type === 'wokwi-ks2e-m-dc5') {
+    if (['coil1', 'c1'].includes(normalized)) return 'COIL1';
+    if (['coil2', 'c2'].includes(normalized)) return 'COIL2';
+    if (['p1', 'com1', 'common1'].includes(normalized)) return 'P1';
+    if (['no1'].includes(normalized)) return 'NO1';
+    if (['nc1'].includes(normalized)) return 'NC1';
+    if (['p2', 'com2', 'common2'].includes(normalized)) return 'P2';
+    if (['no2'].includes(normalized)) return 'NO2';
+    if (['nc2'].includes(normalized)) return 'NC2';
   }
 
   return null;

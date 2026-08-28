@@ -6,8 +6,12 @@ The following assets are derived from the Fritzing parts library:
 - `breadboard-half.svg`
 - `dc-motor.svg`
 - `battery-9v.svg`
+- `battery-aa.svg`
+- `battery-coin-cell.svg`
 - `npn-transistor.svg`
+- `pnp-transistor.svg`
 - `rectifier-diode.svg`
+- `zener-diode.svg`
 
 Upstream project:
 https://github.com/fritzing/fritzing-parts

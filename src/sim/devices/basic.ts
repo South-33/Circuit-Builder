@@ -176,6 +176,63 @@ function outputBindings(context: DeviceContext, part: CircuitPart) {
     });
     context.resetters.push(() => { const element = getElement(part.id); if (element) element.values = new Array(10).fill(0); });
   }
+
+  if (part.type === 'wokwi-ks2e-m-dc5') {
+    const coil1 = source('COIL1');
+    const coil2 = source('COIL2');
+    context.frameUpdaters.push(() => {
+      const element = getElement(part.id);
+      if (!element) return;
+      const c1 = readSignal(coil1);
+      const c2 = readSignal(coil2);
+      const energized = c1 !== null && c2 !== null && c1 !== c2;
+      element.value = energized;
+    });
+    context.resetters.push(() => { const element = getElement(part.id); if (element) element.value = false; });
+  }
+
+  if (part.type === 'wokwi-neopixel') {
+    const vdd = source('VDD');
+    const vss = source('VSS');
+    const din = source('DIN');
+    context.frameUpdaters.push(() => {
+      const element = getElement(part.id);
+      if (!element) return;
+      const powered = readSignal(vdd) === true && readSignal(vss) === false;
+      const data = readSignal(din);
+      if (powered && data) {
+        element.r = 0.2; element.g = 0.8; element.b = 0.2;
+      }
+    });
+    context.resetters.push(() => {
+      const element = getElement(part.id);
+      if (!element) return;
+      element.r = 0; element.g = 0; element.b = 0;
+    });
+  }
+
+  if (part.type === 'wokwi-led-ring' || part.type === 'wokwi-neopixel-matrix') {
+    const vcc = source('VCC');
+    const gnd = source('GND');
+    const din = source('DIN');
+    context.frameUpdaters.push(() => {
+      const element = getElement(part.id);
+      if (!element) return;
+      const powered = readSignal(vcc) === true && readSignal(gnd) === false;
+      const data = readSignal(din);
+      if (powered && data && typeof (element as any).setPixel === 'function') {
+        const count = Number((element as any).pixels ?? 16);
+        for (let i = 0; i < count; i++) {
+          (element as any).setPixel(i, { r: 0.1, g: 0.7, b: 0.9 });
+        }
+      }
+    });
+    context.resetters.push(() => {
+      const element = getElement(part.id);
+      if (!element) return;
+      if (typeof (element as any).reset === 'function') (element as any).reset();
+    });
+  }
 }
 
 export function setupBasicDevices(context: DeviceContext) {

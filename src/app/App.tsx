@@ -26,22 +26,67 @@ import { endpointPoint, partRect, pinExitDirection } from '../wires/geometry';
 import { connectionPolyline, nearestPointOnPolyline, roundedPath, snapPoint, type WireAxis } from '../wires/path';
 import type { CircuitConnection, CircuitPart, PartType, WirePoint } from '../circuit/types';
 
-const WIRE_COLORS = ['#2f9e44', '#d94841', '#343a40', '#1971c2', '#f08c00'];
-const DEFAULT_WIRE_COLOR = WIRE_COLORS[0];
+const WIRE_COLORS = [
+  { key: '0', name: 'Black', color: '#000000' },
+  { key: '1', name: 'Brown', color: '#8b4513' },
+  { key: '2', name: 'Red', color: '#e03131' },
+  { key: '3', name: 'Orange', color: '#f76707' },
+  { key: '4', name: 'Yellow', color: '#fcc419' },
+  { key: '5', name: 'Green', color: '#2f9e44' },
+  { key: '6', name: 'Blue', color: '#1971c2' },
+  { key: '7', name: 'Purple', color: '#845ef7' },
+  { key: '8', name: 'Gray', color: '#868e96' },
+  { key: '9', name: 'White', color: '#f8f9fa' },
+];
+const DEFAULT_WIRE_COLOR = WIRE_COLORS[5].color;
 const WIRE_COLOR_STORAGE_KEY = 'hardware-lab:wire-color';
 
-function UndoIcon({ redo = false }: { redo?: boolean }) {
+function UndoIcon() {
   return (
-    <svg viewBox="0 0 24 24" aria-hidden="true">
-      <path d={redo ? 'M9 7h5a6 6 0 0 1 6 6v3' : 'M15 7h-5a6 6 0 0 0-6 6v3'} />
-      <path d={redo ? 'm15 3 4 4-4 4' : 'm9 3-4 4 4 4'} />
+    <svg viewBox="0 0 24 24" aria-hidden="true" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M9 14 4 9l5-5" />
+      <path d="M4 9h10.5a5.5 5.5 0 0 1 5.5 5.5v0a5.5 5.5 0 0 1-5.5 5.5H11" />
+    </svg>
+  );
+}
+
+function RedoIcon() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="m15 14 5-5-5-5" />
+      <path d="M20 9H9.5A5.5 5.5 0 0 0 4 14.5v0A5.5 5.5 0 0 0 9.5 20H13" />
+    </svg>
+  );
+}
+
+function RotateIcon() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8" />
+      <path d="M21 3v5h-5" />
+    </svg>
+  );
+}
+
+function DeleteIcon() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+    </svg>
+  );
+}
+
+function BomIcon() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01" />
     </svg>
   );
 }
 
 function FrameIcon() {
   return (
-    <svg viewBox="0 0 24 24" aria-hidden="true">
+    <svg viewBox="0 0 24 24" aria-hidden="true" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
       <path d="M8 3H3v5M16 3h5v5M8 21H3v-5M16 21h5v-5" />
     </svg>
   );
@@ -61,7 +106,7 @@ function WireColorTool({ color, onChange }: { color: string; onChange: (color: s
       <button
         type="button"
         className="wire-color-trigger"
-        title="Wire color"
+        title="Wire color (0-9)"
         aria-label="Wire color"
         onClick={() => setOpen((value) => !value)}
       >
@@ -73,12 +118,14 @@ function WireColorTool({ color, onChange }: { color: string; onChange: (color: s
           {WIRE_COLORS.map((option) => (
             <button
               type="button"
-              key={option}
-              className={option === color ? 'active' : ''}
-              aria-label={`Use wire color ${option}`}
-              onClick={() => { onChange(option); setOpen(false); }}
+              key={option.color}
+              className={option.color === color ? 'active' : ''}
+              aria-label={`Use wire color ${option.name} (${option.key})`}
+              onClick={() => { onChange(option.color); setOpen(false); }}
             >
-              <span style={{ background: option }} />
+              <span className="wire-color-chip" style={{ background: option.color }} />
+              <span className="wire-color-name">{option.name}</span>
+              <kbd className="wire-color-key">{option.key}</kbd>
             </button>
           ))}
         </div>
@@ -690,11 +737,83 @@ function Diagnostics({ open, setOpen }: { open: boolean; setOpen: (open: boolean
   );
 }
 
+function BomModal({ onClose }: { onClose: () => void }) {
+  const state = useCircuit();
+  const bomRows = useMemo(() => {
+    const counts = new Map<string, { type: PartType; count: number; name: string }>();
+    for (const part of state.parts) {
+      const def = PART_DEFINITIONS[part.type];
+      const existing = counts.get(part.type) ?? { type: part.type, count: 0, name: def.name };
+      existing.count += 1;
+      counts.set(part.type, existing);
+    }
+    return Array.from(counts.values()).sort((a, b) => a.name.localeCompare(b.name));
+  }, [state.parts]);
+
+  const downloadCsv = () => {
+    const header = 'Component,Quantity,Part Type\n';
+    const lines = bomRows.map((r) => `"${r.name}",${r.count},"${r.type}"`).join('\n');
+    const blob = new Blob([header + lines], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = 'circuit-components.csv';
+    link.click();
+    URL.revokeObjectURL(url);
+  };
+
+  return (
+    <div className="modal-backdrop" onClick={onClose}>
+      <div className="bom-modal" onClick={(e) => e.stopPropagation()}>
+        <div className="bom-modal-header">
+          <h3>Component List ({state.parts.length} total)</h3>
+          <button type="button" className="icon-close" onClick={onClose} aria-label="Close">✕</button>
+        </div>
+        <div className="bom-table-wrap">
+          {bomRows.length === 0 ? (
+            <p className="bom-empty">No components in the circuit yet.</p>
+          ) : (
+            <table className="bom-table">
+              <thead>
+                <tr>
+                  <th>Component</th>
+                  <th>Quantity</th>
+                  <th>Type ID</th>
+                </tr>
+              </thead>
+              <tbody>
+                {bomRows.map((row) => (
+                  <tr key={row.type}>
+                    <td><strong>{row.name}</strong></td>
+                    <td>{row.count}</td>
+                    <td><code>{row.type}</code></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+        <div className="bom-modal-footer">
+          {bomRows.length > 0 && (
+            <button type="button" className="bom-export-btn" onClick={downloadCsv}>
+              Export CSV
+            </button>
+          )}
+          <button type="button" className="bom-close-btn" onClick={onClose}>
+            Close
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function App() {
   const state = useCircuit();
   const canvasRef = useRef<HTMLDivElement | null>(null);
   const [codeOpen, setCodeOpen] = useState(false);
   const [examplesOpen, setExamplesOpen] = useState(false);
+  const [bomOpen, setBomOpen] = useState(false);
   const [wireDraft, setWireDraft] = useState<WireDraft | null>(null);
   const [wirePointer, setWirePointer] = useState<WirePoint | null>(null);
   const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
@@ -710,6 +829,7 @@ export default function App() {
     ?? selectedBoard
     ?? state.parts.find((part) => part.type === 'wokwi-arduino-uno');
   const [draft, setDraft] = useState(board?.code ?? '');
+  const selectedPart = state.parts.find((part) => part.id === state.selectedId);
   const selectedWire = state.connections.find((connection) => connection.id === state.selectedId);
   const shownWireColor = selectedWire?.color ?? activeWireColor;
 
@@ -739,7 +859,15 @@ export default function App() {
     const handleKey = (event: KeyboardEvent) => {
       const target = event.target as HTMLElement;
       if (target.matches('textarea,input,select')) return;
-      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'z') {
+      if (event.key >= '0' && event.key <= '9') {
+        const option = WIRE_COLORS.find((c) => c.key === event.key);
+        if (option) chooseWireColor(option.color);
+      } else if (event.key.toLowerCase() === 'r' && state.selectedId) {
+        const part = state.parts.find((candidate) => candidate.id === state.selectedId);
+        if (part && !isBreadboardType(part.type)) {
+          circuitStore.rotatePart(part.id, ((part.rotate ?? 0) + 90) % 360);
+        }
+      } else if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'z') {
         event.preventDefault();
         event.shiftKey ? circuitStore.redo() : circuitStore.undo();
       } else if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'y') {
@@ -757,7 +885,7 @@ export default function App() {
     };
     window.addEventListener('keydown', handleKey);
     return () => window.removeEventListener('keydown', handleKey);
-  }, [state.selectedId, state.parts]);
+  }, [state.selectedId, state.parts, chooseWireColor]);
 
   const addPart = useCallback((type: PartType) => {
     if (state.simulation.status === 'running' || state.simulation.status === 'compiling') return;
@@ -876,8 +1004,47 @@ export default function App() {
     <div className="app-shell">
       <header className="topbar">
         <div className="toolbar-group">
-          <button type="button" className="icon-button" onClick={() => circuitStore.undo()} disabled={!circuitStore.canUndo()} title="Undo" aria-label="Undo"><UndoIcon /></button>
-          <button type="button" className="icon-button" onClick={() => circuitStore.redo()} disabled={!circuitStore.canRedo()} title="Redo" aria-label="Redo"><UndoIcon redo /></button>
+          <button
+            type="button"
+            className="icon-button"
+            onClick={() => {
+              if (selectedPart && !isBreadboardType(selectedPart.type)) {
+                circuitStore.rotatePart(selectedPart.id, ((selectedPart.rotate ?? 0) + 90) % 360);
+              }
+            }}
+            disabled={!selectedPart || isBreadboardType(selectedPart.type)}
+            title="Rotate selected part (R)"
+            aria-label="Rotate"
+          >
+            <RotateIcon />
+          </button>
+          <button
+            type="button"
+            className="icon-button"
+            onClick={() => {
+              if (selectedPart) circuitStore.removePart(selectedPart.id);
+              else if (selectedWire) circuitStore.removeConnection(selectedWire.id);
+            }}
+            disabled={!state.selectedId}
+            title="Delete selected item (Del)"
+            aria-label="Delete"
+          >
+            <DeleteIcon />
+          </button>
+          <button type="button" className="icon-button" onClick={() => circuitStore.undo()} disabled={!circuitStore.canUndo()} title="Undo (Ctrl+Z)" aria-label="Undo"><UndoIcon /></button>
+          <button type="button" className="icon-button" onClick={() => circuitStore.redo()} disabled={!circuitStore.canRedo()} title="Redo (Ctrl+Y)" aria-label="Redo"><RedoIcon /></button>
+          <div className="toolbar-divider" />
+          <WireColorTool color={shownWireColor} onChange={chooseWireColor} />
+          <button
+            type="button"
+            className={`bom-button${bomOpen ? ' active' : ''}`}
+            onClick={() => setBomOpen(!bomOpen)}
+            title="Component List (BOM)"
+            aria-label="Component list"
+          >
+            <BomIcon />
+            <span>Components</span>
+          </button>
           <div className="examples-wrap">
             <button type="button" className="examples-button" onClick={() => setExamplesOpen((open) => !open)}>
               Examples
@@ -996,7 +1163,7 @@ export default function App() {
             ))}
             {wireDraft && (
               <div className="wire-hint">
-                Route like a pipe: add a few 90? bends, then choose a pin
+                Click canvas to add bend points, then click a pin to connect
                 <button type="button" onClick={() => { setWireDraft(null); setWirePointer(null); }}>Cancel</button>
               </div>
             )}
@@ -1024,6 +1191,7 @@ export default function App() {
           ? <CodePanel board={board} draft={draft} setDraft={setDraft} />
           : <ComponentTray onAdd={addPart} />}
       </main>
+      {bomOpen && <BomModal onClose={() => setBomOpen(false)} />}
     </div>
   );
 }

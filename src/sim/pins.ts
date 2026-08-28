@@ -20,7 +20,7 @@ export function resolveArduinoAnalogChannel(pinName: string): number | null {
   return match ? Number(match[1]) : null;
 }
 
-export type PowerPinClassification = 'gnd' | '5v' | '3v3' | 'vin' | '9v';
+export type PowerPinClassification = 'gnd' | '5v' | '3v3' | 'vin' | '9v' | 'aa' | 'coin';
 
 export function classifyPowerPin(partType: string, pinName: string): PowerPinClassification | null {
   const normalized = pinName.trim().toUpperCase();
@@ -34,6 +34,16 @@ export function classifyPowerPin(partType: string, pinName: string): PowerPinCla
   if (partType === 'battery-9v') {
     if (normalized === '-' || normalized === 'GND' || normalized === 'NEG' || normalized === 'NEGATIVE') return 'gnd';
     if (normalized === '+' || normalized === '9V' || normalized === 'POS' || normalized === 'POSITIVE' || normalized === 'VCC') return '9v';
+    return null;
+  }
+  if (partType === 'battery-aa') {
+    if (normalized === '-' || normalized === 'GND' || normalized === 'NEG' || normalized === 'NEGATIVE') return 'gnd';
+    if (normalized === '+' || normalized === 'POS' || normalized === 'POSITIVE' || normalized === 'VCC') return 'aa';
+    return null;
+  }
+  if (partType === 'battery-coin-cell') {
+    if (normalized === '-' || normalized === 'GND' || normalized === 'NEG' || normalized === 'NEGATIVE') return 'gnd';
+    if (normalized === '+' || normalized === '3V' || normalized === 'POS' || normalized === 'POSITIVE' || normalized === 'VCC') return 'coin';
     return null;
   }
   return null;

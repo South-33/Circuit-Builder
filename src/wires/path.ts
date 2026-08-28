@@ -25,40 +25,22 @@ export function normalizeWaypoints(start: WirePoint, waypoints: WirePoint[], end
   return simplifyWirePoints([start, ...waypoints, end]).slice(1, -1);
 }
 
-function connector(from: WirePoint, to: WirePoint, preferredAxis?: WireAxis) {
-  if (axisBetween(from, to)) return [{ ...to }];
-  const axis = preferredAxis
-    ?? (Math.abs(to.x - from.x) >= Math.abs(to.y - from.y) ? 'horizontal' : 'vertical');
-  const corner = axis === 'horizontal'
-    ? { x: to.x, y: from.y }
-    : { x: from.x, y: to.y };
-  return [corner, { ...to }];
-}
+
 
 /**
  * Render stored wire geometry without routing it. Authored interior waypoints
- * are preserved exactly, including diagonals for human-created wires. The app
- * only adds a minimal lead-in/out elbow when a grid-authored route does not
- * land exactly on the physical source or destination pin.
+ * are preserved exactly, including diagonal bends and freeform paths as in Tinkercad.
+ * The polyline directly traverses start -> waypoints -> end without injecting
+ * artificial 90-degree elbows or doubling back over itself.
  */
 export function connectionPolyline(
   start: WirePoint,
   waypoints: WirePoint[] | undefined,
   end: WirePoint,
-  firstAxis?: WireAxis,
+  _firstAxis?: WireAxis,
 ) {
   const authored = simplifyWirePoints(waypoints ?? []);
-  if (!authored.length) return simplifyWirePoints([start, ...connector(start, end, firstAxis)]);
-
-  const result: WirePoint[] = [{ ...start }];
-  result.push(...connector(start, authored[0], firstAxis));
-  for (const waypoint of authored.slice(1)) result.push({ ...waypoint });
-
-  const last = result[result.length - 1];
-  const previous = result.length >= 2 ? result[result.length - 2] : null;
-  const previousAxis = previous ? axisBetween(previous, last) ?? undefined : undefined;
-  result.push(...connector(last, end, previousAxis));
-  return simplifyWirePoints(result);
+  return simplifyWirePoints([start, ...authored, end]);
 }
 
 export function isOrthogonalPair(a: WirePoint, b: WirePoint) {

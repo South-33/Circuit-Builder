@@ -103,6 +103,10 @@ const WOKWI_TAG_MAP = {
   'wokwi-ssd1306': wokwi.SSD1306Element,
   'wokwi-ds1307': wokwi.Ds1307Element,
   'wokwi-mpu6050': wokwi.MPU6050Element,
+  'wokwi-neopixel': wokwi.NeoPixelElement,
+  'wokwi-led-ring': wokwi.LEDRingElement,
+  'wokwi-neopixel-matrix': wokwi.NeopixelMatrixElement,
+  'wokwi-ks2e-m-dc5': wokwi.KS2EMDC5Element,
 };
 
 globalThis.document = {
@@ -555,9 +559,9 @@ harness.test('F03: NPN Transistor motor control driving DC motor', () => {
   assertEqual(mockEl.dataset.motorDirection, 'stopped');
 });
 
-// F04: Simulation State Completeness (All 42 Parts)
-harness.test('F04: Exactly 42 catalog parts exist in PART_TYPES and PART_DEFINITIONS', () => {
-  assertEqual(PART_TYPES.length, 42, '42 PART_TYPES total');
+// F04: Simulation State Completeness (All 50 Parts)
+harness.test('F04: Exactly 50 catalog parts exist in PART_TYPES and PART_DEFINITIONS', () => {
+  assertEqual(PART_TYPES.length, 50, '50 PART_TYPES total');
   for (const type of PART_TYPES) {
     assert(PART_DEFINITIONS[type], `PART_DEFINITIONS must contain an entry for ${type}`);
   }
@@ -594,8 +598,8 @@ harness.test('F04: Part bounding box calculation getPartBounds', () => {
   }
 });
 
-// F05: 42-Part Visual & Custom Element Audit
-harness.test('F05: All 36 Wokwi custom elements instantiate with non-empty pinInfo', () => {
+// F05: 50-Part Visual & Custom Element Audit
+harness.test('F05: All 40 Wokwi custom elements instantiate with non-empty pinInfo', () => {
   let verified = 0;
   for (const [type, def] of Object.entries(PART_DEFINITIONS)) {
     if (def.tag && def.tag.startsWith('wokwi-')) {
@@ -608,11 +612,22 @@ harness.test('F05: All 36 Wokwi custom elements instantiate with non-empty pinIn
       verified++;
     }
   }
-  assertEqual(verified, 36, 'Must verify all 36 Wokwi custom elements');
+  assertEqual(verified, 40, 'Must verify all 40 Wokwi custom elements');
 });
 
-harness.test('F05: All 6 static SVG/Fritzing components define explicit pin coordinates', () => {
-  const staticParts = ['breadboard', 'breadboard-half', 'dc-motor', 'npn-transistor', 'rectifier-diode', 'battery-9v'];
+harness.test('F05: All 10 static SVG/Fritzing components define explicit pin coordinates', () => {
+  const staticParts = [
+    'breadboard',
+    'breadboard-half',
+    'dc-motor',
+    'npn-transistor',
+    'pnp-transistor',
+    'rectifier-diode',
+    'zener-diode',
+    'battery-9v',
+    'battery-aa',
+    'battery-coin-cell',
+  ];
   for (const type of staticParts) {
     const pins = getPartPins(type);
     assert(pins.length > 0, `Static component ${type} must have pins`);
@@ -942,7 +957,7 @@ harness.test('F09: WebMCP registerWebMCPTools registers all 6 tools into modelCo
   }
 });
 
-harness.test('F09: WebMCP inspect-circuit returns canvas, 42 supported parts, layout, and pin filtering', async () => {
+harness.test('F09: WebMCP inspect-circuit returns canvas, 50 supported parts, layout, and pin filtering', async () => {
   circuitStore.replaceDocument({
     parts: [
       { id: 'uno1', type: 'wokwi-arduino-uno', left: 100, top: 100, attrs: {}, code: 'void setup(){}' },
@@ -953,7 +968,7 @@ harness.test('F09: WebMCP inspect-circuit returns canvas, 42 supported parts, la
 
   const basic = await callWebMcp('inspect-circuit');
   assertEqual(basic.canvas.units, 'pixels');
-  assertEqual(basic.supportedPartTypes.length, 42);
+  assertEqual(basic.supportedPartTypes.length, 50);
   assertEqual(basic.parts.length, 2);
   assert(!basic.parts[0].pins, 'Pins should be omitted by default');
   assert(basic.layout, 'Layout should be included by default');

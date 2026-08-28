@@ -11,13 +11,17 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "check:repo": "node scripts/check-repo.mjs",
+    "check:repo": "node scripts/maintenance/check-repo.mjs",
+    "audit:grid": "node scripts/maintenance/audit-component-grid.mjs",
     "typecheck": "tsc --noEmit",
-    "test": "node scripts/test-circuits.mjs",
-    "test:e2e": "node scripts/test-circuits.mjs",
+    "test": "node scripts/testing/test-circuits.mjs",
+    "test:e2e": "node scripts/testing/test-circuits.mjs",
     "check": "pnpm check:repo && pnpm build",
     "build": "tsc --noEmit && vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "benchmark:harnesses": "node scripts/benchmarks/harness-comparison.mjs",
+    "audit:components": "pnpm audit:grid && node scripts/maintenance/audit-component-render.mjs",
+    "audit:examples": "node scripts/maintenance/audit-example-renders.mjs"
   },
   "dependencies": {
     "@wokwi/elements": "^1.9.2",

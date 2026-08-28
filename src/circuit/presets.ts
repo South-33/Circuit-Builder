@@ -1,9 +1,7 @@
-import { gridPartPlacement, gridPointToCanvas } from '../agent/layout';
-import type { CircuitConnection, CircuitPart, WirePoint } from './types';
+import { gridPartPlacement } from '../agent/core/layout';
+import type { CircuitConnection, CircuitPart } from './types';
 
 const placed = (x: number, y: number) => gridPartPlacement({ x, y });
-const route = (...points: Array<[number, number]>): WirePoint[] =>
-  points.map(([x, y]) => gridPointToCanvas({ x, y }));
 
 export type CircuitPreset = {
   id: string;
@@ -98,10 +96,10 @@ export const CIRCUIT_PRESETS: CircuitPreset[] = [
     name: 'IR Motor Control',
     description: 'Remote-controlled dual DC motors with a breadboarded IR receiver',
     parts: [
-      { id: 'remote1', type: 'wokwi-ir-remote', ...placed(1, 2), attrs: {} },
-      { id: 'motor1', type: 'dc-motor', ...placed(28, 3), attrs: {} },
-      { id: 'motor2', type: 'dc-motor', ...placed(36, 3), attrs: {} },
-      { id: 'bb1', type: 'breadboard-half', ...placed(15, 9), attrs: {} },
+      { id: 'remote1', type: 'wokwi-ir-remote', left: 1129.58, top: 468.74, rotate: 0, attrs: {} },
+      { id: 'motor1', type: 'dc-motor', left: 1651.2, top: 743.5, rotate: 0, attrs: {} },
+      { id: 'motor2', type: 'dc-motor', left: 1872, top: 743.5, rotate: 0, attrs: {} },
+      { id: 'bb1', type: 'breadboard-half', left: 1435.04, top: 902.4, rotate: 0, attrs: {} },
       {
         id: 'ir1',
         type: 'wokwi-ir-receiver',
@@ -110,20 +108,42 @@ export const CIRCUIT_PRESETS: CircuitPreset[] = [
         attrs: {},
         seating: {
           breadboardId: 'bb1',
-          pins: { GND: 'E20', VCC: 'E21', DAT: 'E22' },
+          pins: { GND: 'J20', VCC: 'J21', DAT: 'J22' },
         },
       },
-      { id: 'uno1', type: 'wokwi-arduino-uno', ...placed(3, 10), attrs: {}, code: irMotorCode },
+      { id: 'uno1', type: 'wokwi-arduino-uno', left: 1044.88, top: 806.91, rotate: 0, attrs: {}, code: irMotorCode },
     ],
     connections: [
-      { id: 'wire1', from: 'uno1:5V', to: 'ir1:VCC', color: '#d94841', waypoints: route([8, 18], [12, 18], [12, 7], [22, 7]) },
-      { id: 'wire2', from: 'uno1:GND.2', to: 'bb1:-top1', color: '#343a40', waypoints: route([9, 19], [13, 19], [13, 8], [16, 8]) },
-      { id: 'wire3', from: 'ir1:GND', to: 'bb1:-top20', color: '#343a40', waypoints: route([21, 8]) },
-      { id: 'wire4', from: 'uno1:3', to: 'ir1:DAT', color: '#1971c2', waypoints: route([11, 6], [23, 6]) },
-      { id: 'wire5', from: 'uno1:2', to: 'motor1:1', color: '#2f9e44', waypoints: route([11, 2], [28, 2]) },
-      { id: 'wire6', from: 'motor1:2', to: 'bb1:-top25', color: '#343a40', waypoints: route([27, 4], [27, 8], [25, 8]) },
-      { id: 'wire7', from: 'uno1:5', to: 'motor2:1', color: '#f08c00', waypoints: route([10, 1], [36, 1]) },
-      { id: 'wire8', from: 'motor2:2', to: 'bb1:-top24', color: '#343a40', waypoints: route([35, 4], [35, 9], [25, 9]) },
+      { id: 'wire1', from: 'uno1:5V', to: 'bb1:+bottom1', color: '#d94841', waypoints: [
+        { x: 1206.564210526316, y: 1019.2 }, { x: 1206.4, y: 1019.2 }, { x: 1206.4, y: 1115.2 }, { x: 1468.8, y: 1115.2 },
+      ] },
+      { id: 'wire2', from: 'uno1:GND.2', to: 'bb1:-top1', color: '#343a40', waypoints: [
+        { x: 1216.1642105263159, y: 1019.2 }, { x: 1427.2, y: 1019.2 }, { x: 1427.2, y: 912 },
+      ] },
+      { id: 'wire3', from: 'bb1:+bottom21', to: 'ir1:VCC', color: '#d94841', waypoints: [
+        { x: 1772.8, y: 1094.4 }, { x: 1772.8, y: 1067.2 }, { x: 1660.798, y: 1067.2 },
+      ] },
+      { id: 'wire4', from: 'ir1:GND', to: 'bb1:-bottom20', color: '#343a40', waypoints: [
+        { x: 1638.4, y: 1056 }, { x: 1638.4, y: 1115.2 }, { x: 1680, y: 1115.2 },
+      ] },
+      { id: 'wire5', from: 'uno1:3', to: 'ir1:DAT', color: '#1971c2', waypoints: [
+        { x: 1274.2694736842107, y: 798.4 }, { x: 1273.6, y: 798.4 }, { x: 1273.6, y: 1048 }, { x: 1670.4, y: 1048 },
+      ] },
+      { id: 'wire6', from: 'uno1:2', to: 'motor1:1', color: '#2f9e44', waypoints: [
+        { x: 1283.8694736842106, y: 798.4 }, { x: 1283.2, y: 798.4 }, { x: 1283.2, y: 779.2 }, { x: 1638.4, y: 779.2 }, { x: 1638.4, y: 777.6 },
+      ] },
+      { id: 'wire7', from: 'motor1:2', to: 'bb1:-top20', color: '#343a40', waypoints: [
+        { x: 1638.4, y: 787.58 }, { x: 1638.4, y: 894.4 }, { x: 1680, y: 894.4 },
+      ] },
+      { id: 'wire8', from: 'uno1:5', to: 'motor2:1', color: '#f08c00', waypoints: [
+        { x: 1255.0694736842106, y: 798.4 }, { x: 1254.4, y: 798.4 }, { x: 1254.4, y: 721.6 }, { x: 1859.2, y: 721.6 }, { x: 1859.2, y: 777.6 },
+      ] },
+      { id: 'wire9', from: 'motor2:2', to: 'bb1:-top25', color: '#343a40', waypoints: [
+        { x: 1859.2, y: 787.58 }, { x: 1859.2, y: 788.8 }, { x: 1830.4, y: 788.8 }, { x: 1830.4, y: 913.6 }, { x: 1772.8, y: 913.6 }, { x: 1772.8, y: 912 },
+      ] },
+      { id: 'wire10', from: 'bb1:-top25', to: 'bb1:-bottom25', color: '#343a40', waypoints: [
+        { x: 1737.6, y: 894.4 },
+      ] },
     ],
   },
   {
@@ -143,8 +163,12 @@ export const CIRCUIT_PRESETS: CircuitPreset[] = [
       },
     ],
     connections: [
-      { id: 'wire1', from: 'uno1:13', to: 'bb1:A6', color: '#2f9e44', waypoints: route([11, 6], [17, 6]) },
-      { id: 'wire2', from: 'bb1:E11', to: 'uno1:GND.2', color: '#343a40', waypoints: route([19, 16], [9, 16]) },
+      { id: 'wire1', from: 'uno1:13', to: 'bb1:A6', color: '#2f9e44', waypoints: [
+        { x: 1822.3157894736842, y: 1240 }, { x: 2161.76, y: 1240 },
+      ] },
+      { id: 'wire2', from: 'bb1:E11', to: 'uno1:GND.2', color: '#343a40', waypoints: [
+        { x: 2209.76, y: 1470.4 }, { x: 1867.2842105263157, y: 1470.4 },
+      ] },
     ],
   },
   {
@@ -158,11 +182,26 @@ export const CIRCUIT_PRESETS: CircuitPreset[] = [
       { id: 'r1', type: 'wokwi-resistor', ...placed(20, 13), attrs: { value: '220' } },
     ],
     connections: [
-      { id: 'wire1', from: 'uno1:2', to: 'button1:1.l', color: '#1971c2', waypoints: route([12, 6], [17, 6]) },
-      { id: 'wire2', from: 'button1:2.l', to: 'uno1:GND.2', color: '#343a40', waypoints: route([18, 15], [9, 15]) },
-      { id: 'wire3', from: 'uno1:9', to: 'r1:1', color: '#2f9e44', waypoints: route([10, 5], [19, 5], [19, 13]) },
-      { id: 'wire4', from: 'r1:2', to: 'led1:A', color: '#d94841', waypoints: route([23, 13], [23, 11]) },
-      { id: 'wire5', from: 'led1:C', to: 'uno1:GND.3', color: '#343a40', waypoints: route([25, 16], [10, 16]) },
+      { id: 'wire1', from: 'uno1:2', to: 'button1:1.l', color: '#1971c2', waypoints: [
+        { x: 1934.9894736842105, y: 1240 }, { x: 2128, y: 1240 }, { x: 2128, y: 1237 },
+      ] },
+      { id: 'wire2', from: 'button1:2.l', to: 'uno1:GND.2', color: '#343a40', waypoints: [
+        { x: 2128, y: 1256 }, { x: 2128, y: 1259.2 }, { x: 1868.8, y: 1259.2 },
+        { x: 1868.8, y: 1470.4 }, { x: 1867.2842105263157, y: 1470.4 },
+      ] },
+      { id: 'wire3', from: 'uno1:9', to: 'r1:1', color: '#2f9e44', waypoints: [
+        { x: 1860.7157894736843, y: 1240 }, { x: 1859.2, y: 1240 }, { x: 1859.2, y: 1201.6 },
+        { x: 2233.6, y: 1201.6 }, { x: 2233.6, y: 1422.4 }, { x: 2224, y: 1422.4 },
+        { x: 2224, y: 1421.534693877551 },
+      ] },
+      { id: 'wire4', from: 'r1:2', to: 'led1:A', color: '#d94841', waypoints: [
+        { x: 2310.4, y: 1421.534693877551 }, { x: 2310.4, y: 1422.4 }, { x: 2339.2, y: 1422.4 },
+        { x: 2339.2, y: 1355.2 }, { x: 2358.4, y: 1355.2 }, { x: 2358.4, y: 1384 }, { x: 2360, y: 1384 },
+      ] },
+      { id: 'wire5', from: 'led1:C', to: 'uno1:GND.3', color: '#343a40', waypoints: [
+        { x: 2350.4, y: 1384 }, { x: 2348.8, y: 1384 }, { x: 2348.8, y: 1470.4 },
+        { x: 1876.8842105263159, y: 1470.4 },
+      ] },
     ],
   },
   {
@@ -174,9 +213,18 @@ export const CIRCUIT_PRESETS: CircuitPreset[] = [
       { id: 'pot1', type: 'wokwi-potentiometer', ...placed(18, 9), attrs: { value: 512 } },
     ],
     connections: [
-      { id: 'wire1', from: 'uno1:5V', to: 'pot1:VCC', color: '#d94841', waypoints: route([9, 16], [17, 16]) },
-      { id: 'wire2', from: 'uno1:GND.2', to: 'pot1:GND', color: '#343a40', waypoints: route([10, 17], [19, 17]) },
-      { id: 'wire3', from: 'uno1:A0', to: 'pot1:SIG', color: '#1971c2', waypoints: route([12, 15], [18, 15]) },
+      { id: 'wire1', from: 'uno1:5V', to: 'pot1:VCC', color: '#d94841', waypoints: [
+        { x: 1889.6842105263158, y: 1470.4 }, { x: 1888, y: 1470.4 }, { x: 1888, y: 1480 },
+        { x: 2224, y: 1480 }, { x: 2224, y: 1374.4 }, { x: 2223.04, y: 1374.4 },
+      ] },
+      { id: 'wire2', from: 'uno1:GND.2', to: 'pot1:GND', color: '#343a40', waypoints: [
+        { x: 1899.2842105263157, y: 1470.4 }, { x: 1926.4, y: 1470.4 }, { x: 1926.4, y: 1374.4 },
+        { x: 2203.84, y: 1374.4 },
+      ] },
+      { id: 'wire3', from: 'uno1:A0', to: 'pot1:SIG', color: '#1971c2', waypoints: [
+        { x: 1938.1894736842105, y: 1470.4 }, { x: 2214.4, y: 1470.4 }, { x: 2214.4, y: 1374.4 },
+        { x: 2213.44, y: 1374.4 },
+      ] },
     ],
   },
 ];

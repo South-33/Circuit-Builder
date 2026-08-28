@@ -1,6 +1,7 @@
 import { getPartBounds } from '../components/parts';
 import type { CircuitConnection, CircuitPart, PartType } from '../circuit/types';
 import { alignExplicitSeating } from '../breadboard/placement';
+import { BREADBOARD_HOLE_PITCH } from '../breadboard/geometry';
 import { partRect } from '../wires/geometry';
 
 // A focused logical surface keeps circuit coordinates compact while
@@ -29,8 +30,12 @@ export function centerCircuitDocument(parts: CircuitPart[], connections: Circuit
   const maxX = Math.max(...rects.map((rect) => rect.x + rect.width));
   const minY = Math.min(...rects.map((rect) => rect.y));
   const maxY = Math.max(...rects.map((rect) => rect.y + rect.height));
-  const dx = WORKSPACE_WIDTH / 2 - (minX + maxX) / 2;
-  const dy = WORKSPACE_HEIGHT / 2 - (minY + maxY) / 2;
+  // Keep centering on the physical connector lattice. An arbitrary fractional
+  // shift makes every previously aligned pin miss the visible grid together.
+  const rawDx = WORKSPACE_WIDTH / 2 - (minX + maxX) / 2;
+  const rawDy = WORKSPACE_HEIGHT / 2 - (minY + maxY) / 2;
+  const dx = Math.round(rawDx / BREADBOARD_HOLE_PITCH) * BREADBOARD_HOLE_PITCH;
+  const dy = Math.round(rawDy / BREADBOARD_HOLE_PITCH) * BREADBOARD_HOLE_PITCH;
   return {
     parts: alignedParts.map((part) => ({ ...part, left: part.left + dx, top: part.top + dy })),
     connections: connections.map((connection) => ({

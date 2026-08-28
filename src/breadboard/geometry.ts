@@ -16,6 +16,7 @@ export type BreadboardGeometry = {
 };
 
 const PITCH = 7.2;
+export const BREADBOARD_HOLE_PITCH = PITCH * BREADBOARD_SCALE;
 const ROW_Y: Record<string, number> = {
   A: 36,
   B: 43.2,

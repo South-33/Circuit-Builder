@@ -1,57 +1,79 @@
+This is the project's AGENTS.md
+
 # Repository instructions
 
-This repository is intentionally small and explicit. Preserve that shape.
+Keep this repo small, explicit, and easy for a weaker implementation agent to navigate.
 
-## Before changing code
+## Read first
 
-1. Read `docs/GUIDE.md` for architecture ownership, component catalog guides, and WebMCP agent workbench specifications.
-2. Use `pnpm` only.
+1. `docs/architecture/overview.md`
+2. `docs/guides/agent-harnesses.md` for any WebMCP/agent work
+3. `docs/guides/adding-components.md` for component work
 
-## Architecture ownership
+Use `pnpm` only.
 
-- `src/app/`: React UI and CSS only. Do not put circuit intelligence here.
-- `src/components/`: component catalog, canonical part types, and Wokwi element registration.
-- `src/circuit/`: document types, store/history, and known-good presets.
-- `src/agent/`: WebMCP tools, compact planning grid, and layout validation.
-- `src/breadboard/`: breadboard geometry and physical seating/snapping.
-- `src/wires/`: exact pin geometry and rendering of authored wire paths.
-- `src/sim/`: AVR runtime, circuit graph, diagnostics, and device adapters.
-- `src/layout/`: workspace placement helpers.
-- `public/assets/`: runtime artwork only.
-- `docs/`: architecture, guides, research, and legal notes.
-- `scripts/`: repository checks only.
+## Directory ownership
 
-## Non-negotiable design rules
+- `src/app/`: React UI and CSS. No circuit/simulation policy.
+- `src/components/`: canonical parts, dimensions, pins, properties, and element registration.
+- `src/circuit/`: document types, store/history, and presets.
+- `src/breadboard/`: named-hole geometry and physical seating.
+- `src/wires/`: exact pin/wire rendering geometry. It does not decide agent routing policy.
+- `src/sim/`: graph, diagnostics, AVR runtime, and device adapters.
+- `src/layout/`: ordinary workspace placement helpers.
+- `src/agent/core/`: shared agent grid, geometry checks, deterministic router, parsing, and run metrics.
+- `src/agent/profiles/`: mutually exclusive experimental action spaces A/B/C.
+- `src/agent/webmcp.ts`: WebMCP registration and common tools.
+- `scripts/testing/`: regression suite and AVR fixture tooling.
+- `scripts/benchmarks/`: harness implementation smoke comparisons.
+- `scripts/maintenance/`: repo hygiene checks.
+- `benchmark-results/`: local generated benchmark/audit output. Do not commit it.
 
-- Do not add an automatic/smart wire router. Humans and agents author wire paths. The app only snaps endpoints to exact physical pins and validates the result.
-- Do not expand the six WebMCP tools unless a genuinely new capability cannot fit an existing tool.
-- Prefer batch operations and semantic IDs over mouse automation or raw screenshots.
-- Breadboard electrical state is expressed with named holes such as `E20`, `A6`, `+top1`, and `-bottom1`.
-- Agent wire routes use explicit grid waypoints. Preserve authored interior paths.
+## Agent/harness rules
+
+- Grid `(0,0)` is the semantic workbench center. New harness coordinates refer to component centers.
+- The agent planning grid is coarse: one planning cell is 32 px. Keep that conversion in `src/agent/core/grid.ts` as the single source of truth.
+- Pins, breadboard holes, visible workspace dots, and Harness C routing use the separate 9.6 px physical connector lattice. Never force physical geometry onto the 32 px planning grid.
+- Do not create duplicate hand-maintained component size/pin tables for agents. Use canonical component and wire geometry.
+- Harness A and B intentionally let the model own layout/routing geometry. Harness C intentionally uses deterministic placement/routing helpers. Do not make them converge into the same interface before the experiment is evaluated.
+- Only one mutating harness action space should be registered per page. Avoid giving the model several equivalent tools and asking it to choose.
+- `inspect-circuit` exact state and the ASCII grid are primary feedback. Rendered browser feedback is useful for visual judging, not for rediscovering geometry the app already knows.
+- `evaluateLayout()` is independent evaluation. Never lower penalties, hide crossings, or relax checks just to improve a harness score.
+- Electrical correctness and visual/layout quality are separate. Do not claim either passed unless the relevant check actually ran.
+- Breadboard electrical state uses named holes such as `E20`, `A6`, `+top1`, and `-bottom1`.
+- Preserve semantic wire endpoints even when visual routes change.
 - Keep `src/app/` free of simulator/device-specific logic.
-- Never mark a component `simulated: true` unless the simulator actually models its behavior.
-- Do not copy AGPL/GPL application code into this MIT project. Research concepts are fine; reimplement cleanly or use compatible upstream code/assets with attribution.
-- Do not commit temporary browser profiles, screenshots, build output, debug scripts, or generated scratch files.
+- Never mark a component `simulated: true` until its behavior is actually modeled.
+
+## Experiment discipline
+
+- `pnpm benchmark:harnesses` is only a deterministic smoke test with fixed known-good inputs. It does not prove one harness is better for an LLM.
+- Real model comparisons use fresh tabs with `?harness=a`, `?harness=b`, `?harness=c`, or `?harness=legacy`, plus `benchmark-run start/finish`.
+- Use the same task/model/settings for each profile and run multiple attempts.
+- Keep visual-refinement-loop experiments separate until the action-space comparison is done.
 
 ## Adding a component
 
-Follow `docs/GUIDE.md` (Section 2: Adding Components). In short:
+Follow `docs/guides/adding-components.md`. In short, update the canonical type/catalog, register visuals, add real simulator behavior or leave `simulated: false`, add tests, and reuse the same geometry everywhere.
 
-1. Add the type to `src/components/partTypes.ts`.
-2. Add its metadata to `src/components/parts.ts`.
-3. If Wokwi-backed, add one import to `src/components/registerElements.ts`. If static artwork, put it under `public/assets/` and add required attribution.
-4. Add real simulation behavior in the closest module under `src/sim/devices/`, or set `simulated: false` until implemented.
-5. Add inspector properties through component metadata, not custom UI branches when a generic property control is sufficient.
-6. Run `pnpm check`.
+## Licensing and cleanup
 
-## Before committing
+- Do not copy AGPL/GPL application code into this project. Research concepts are fine. Reimplement cleanly or use compatible upstream code/assets with attribution.
+- Preserve `docs/legal/THIRD_PARTY_NOTICES.md` and `public/assets/fritzing/ATTRIBUTION.md` when touching adapted code/assets.
+- Do not commit temporary browser profiles, screenshots, build output, debug scripts, or generated benchmark JSON.
+
+## Before finishing a change
 
 Run:
 
 ```bash
 pnpm check
+pnpm test
+pnpm benchmark:harnesses
+pnpm audit:components
+pnpm audit:examples
 git diff --check
 git status --short
 ```
 
-Keep commits coherent and leave the working tree free of stale/debug artifacts.
+Fix the implementation when a real check fails. Do not weaken the check to make the run green.

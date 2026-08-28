@@ -144,8 +144,8 @@ button { color: inherit; }
   top: 0;
   background-color: #f8f9fa;
   background-image: radial-gradient(rgba(148, 163, 184, 0.28) 1px, transparent 1px);
-  background-size: 20px 20px;
-  background-position: 0 0;
+  background-size: 9.6px 9.6px; /* 0.1-inch breadboard pitch */
+  background-position: -4.8px -4.8px; /* center visible dots on the 9.6px physical connector lattice */
   box-shadow: 0 4px 32px rgba(0, 0, 0, 0.08);
   will-change: transform;
 }
@@ -562,7 +562,11 @@ button { color: inherit; }
   will-change: transform;
 }
 .canvas-part.is-breadboard { z-index: 2 !important; }
-.canvas-part.selected { z-index: 20; }
+/* Selection is a visual state, not a layer-order change. Wires should keep
+   passing over components exactly as they do before selection, otherwise
+   selecting a part makes connected wiring look disconnected. */
+.canvas-part.selected { z-index: 8; }
+.canvas-part.is-breadboard.selected { z-index: 2 !important; }
 .canvas-part:active { cursor: grabbing; }
 .canvas-part.selected .part-render > * {
   filter: drop-shadow(0 0 2px #2d86e6) drop-shadow(0 0 4px rgba(45, 134, 230, 0.4));
@@ -575,6 +579,11 @@ button { color: inherit; }
 
 .part-render { position: absolute; left: 0; top: 0; pointer-events: none; }
 .part-render > * { display: block; transform-origin: 0 0; pointer-events: auto; margin: 0; padding: 0; }
+/* The Wokwi resistor's shadow SVG is an inline flex child. Forcing its host to
+   block creates a line box and drops the visual lead center below pinInfo by
+   about 4.6 logical pixels. Keep this host flex so the drawn lead and the
+   electrical pin coordinates share the exact same horizontal axis. */
+.part-render > wokwi-resistor { display: flex; }
 .part-pins { position: absolute; inset: 0; z-index: 45; pointer-events: none; overflow: visible; }
 
 .pin-hit {
@@ -701,6 +710,7 @@ button { color: inherit; }
 .dc-motor-preview { width: 62px; height: auto; margin-top: 14px; }
 
 .wire-layer { position: absolute; inset: 0; z-index: 12; overflow: visible; pointer-events: none; }
+.alignment-guide { stroke: #45c7f0; stroke-width: 1; stroke-dasharray: 5 4; opacity: .9; pointer-events: none; vector-effect: non-scaling-stroke; }
 .wire-path { fill: none; stroke-width: 3; stroke-linecap: round; stroke-linejoin: round; pointer-events: none; }
 .wire-hit { fill: none; stroke: transparent; stroke-width: 14; pointer-events: stroke; cursor: pointer; }
 .wire-path.selected { stroke-width: 4; filter: drop-shadow(0 0 1.5px #3182ce); }
@@ -708,6 +718,14 @@ button { color: inherit; }
 .wire-waypoint { fill: #fff; stroke: #2d7dd2; stroke-width: 2; pointer-events: all; cursor: grab; }
 .wire-waypoint:hover { r: 6; fill: #eaf3fd; }
 .wire-waypoint:active { cursor: grabbing; }
+.wire-endpoint { fill: #fff; stroke: #2d7dd2; stroke-width: 2; pointer-events: all; cursor: grab; }
+.wire-endpoint.source { fill: #e8f3ff; }
+.wire-endpoint.destination { fill: #fff; }
+.wire-endpoint:hover { r: 6; }
+.wire-endpoint.dragging { cursor: grabbing; }
+.wire-endpoint.disabled { cursor: default; opacity: .65; pointer-events: none; }
+.wire-rewire-preview { stroke: #2d7dd2; stroke-width: 2; stroke-dasharray: 5 4; pointer-events: none; }
+.wire-rewire-target { fill: #dceeff66; stroke: #2d7dd2; stroke-width: 1.5; pointer-events: none; }
 .wire-preview { fill: none; stroke-width: 2.8; stroke-dasharray: 6 4; stroke-linecap: round; stroke-linejoin: round; opacity: .95; }
 .wire-preview-point { fill: #fff; stroke: #333; stroke-width: 1.5; }
 @keyframes wire-pulse { from { opacity: .5; } to { opacity: 1; } }

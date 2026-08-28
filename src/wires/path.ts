@@ -93,10 +93,3 @@ export function nearestPointOnPolyline(points: WirePoint[], point: WirePoint) {
   }
   return best;
 }
-
-export function snapPoint(point: WirePoint, grid = 5): WirePoint {
-  return {
-    x: Math.round(point.x / grid) * grid,
-    y: Math.round(point.y / grid) * grid,
-  };
-}

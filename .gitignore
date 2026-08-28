@@ -10,3 +10,4 @@ ui*.png
 ui-*.png
 vite.config.js
 vite.config.d.ts
+benchmark-results/

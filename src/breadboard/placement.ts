@@ -1,7 +1,8 @@
 import { getPartPins, PART_DEFINITIONS } from '../components/parts';
 import type { BreadboardSeating, CircuitPart, WirePoint } from '../circuit/types';
+import { alignPartToParts, type AlignmentGuide } from '../layout/alignment';
 import { localPinPoint, partRect } from '../wires/geometry';
-import { isBreadboardType } from './geometry';
+import { BREADBOARD_HOLE_PITCH, isBreadboardType } from './geometry';
 
 export type SnapMode = 'normal' | 'fine' | 'off';
 
@@ -9,6 +10,7 @@ export type PartPlacement = {
   left: number;
   top: number;
   seating?: BreadboardSeating;
+  guides?: AlignmentGuide[];
 };
 
 /** Compact agent primitive: align one component pin to one named breadboard hole. */
@@ -18,8 +20,8 @@ export type BreadboardAnchor = {
   hole: string;
 };
 
-const FREE_GRID = 10;
-const FINE_GRID = 5;
+const FREE_GRID = BREADBOARD_HOLE_PITCH;
+const FINE_GRID = BREADBOARD_HOLE_PITCH / 2;
 const HOLE_CAPTURE_DISTANCE = 18;
 const MAX_SEATED_PIN_ERROR = 4.75;
 const BOARD_CAPTURE_MARGIN = 28;
@@ -225,6 +227,7 @@ export function snapPartPlacement(
   proposedTop: number,
   allParts: CircuitPart[],
   mode: SnapMode = 'normal',
+  alignmentThreshold = 6,
 ): PartPlacement {
   const proposed: CircuitPart = { ...part, left: proposedLeft, top: proposedTop, seating: undefined };
 
@@ -249,8 +252,26 @@ export function snapPartPlacement(
   }
 
   if (mode === 'off') return { left: proposedLeft, top: proposedTop };
+  const aligned = alignPartToParts(part, proposedLeft, proposedTop, allParts, alignmentThreshold);
   const grid = mode === 'fine' ? FINE_GRID : FREE_GRID;
-  return { left: roundTo(proposedLeft, grid), top: roundTo(proposedTop, grid) };
+
+  // Snap by a real component pin when possible, not by the component's arbitrary
+  // top-left box. This keeps breadboard-compatible parts (resistors, LEDs, DIP
+  // parts, etc.) on the same 0.1-inch physical lattice as breadboard holes.
+  const candidate: CircuitPart = { ...part, left: aligned.left, top: aligned.top, seating: undefined };
+  const anchorPin = partPinPoints(candidate)[0];
+  const pinSnappedLeft = anchorPin
+    ? candidate.left + (roundTo(anchorPin.point.x, grid) - anchorPin.point.x)
+    : roundTo(candidate.left, grid);
+  const pinSnappedTop = anchorPin
+    ? candidate.top + (roundTo(anchorPin.point.y, grid) - anchorPin.point.y)
+    : roundTo(candidate.top, grid);
+
+  return {
+    left: aligned.snappedX ? aligned.left : Math.round(pinSnappedLeft * 100) / 100,
+    top: aligned.snappedY ? aligned.top : Math.round(pinSnappedTop * 100) / 100,
+    ...(aligned.guides.length ? { guides: aligned.guides } : {}),
+  };
 }
 
 export function getBreadboardSeating(part: CircuitPart, allParts: CircuitPart[]) {

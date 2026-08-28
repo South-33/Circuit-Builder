@@ -1,60 +1,138 @@
-import { getPartBounds, PART_DEFINITIONS } from '../components/parts';
-import type { CircuitConnection, CircuitDocument, CircuitPart, WirePoint } from '../circuit/types';
-import { endpointParts, endpointPoint, partRect, pinExitDirection } from '../wires/geometry';
-import { connectionPolyline, isOrthogonalPair, type WireAxis } from '../wires/path';
-import { isBreadboardType } from '../breadboard/geometry';
-import { CANVAS_CENTER_X, CANVAS_CENTER_Y } from '../layout/placement';
+import { PART_DEFINITIONS } from '../../components/parts';
+import type { CircuitConnection, CircuitDocument, CircuitPart, WirePoint } from '../../circuit/types';
+import { endpointParts, endpointPoint, partRect, pinExitDirection, type CardinalDirection } from '../../wires/geometry';
+import { connectionPolyline, isOrthogonalPair, type WireAxis } from '../../wires/path';
+import { BREADBOARD_HOLE_PITCH, isBreadboardType } from '../../breadboard/geometry';
+import { CANVAS_CENTER_X, CANVAS_CENTER_Y } from '../../layout/placement';
 
-export const AGENT_GRID_SIZE = 32;
+import { AGENT_GRID_SIZE, canvasPointToGrid, partGridRect, partGridSize } from './grid';
+import { inferWireKind, wireColorMatchesStandard } from './wiring';
+export { AGENT_GRID_SIZE, canvasPointToGrid, gridCenterPlacement, gridPartPlacement, gridPointToCanvas, partCenterGrid, partGridSize } from './grid';
+
 const MAP_MARGIN_CELLS = 2;
 const MAX_MAP_COLUMNS = 72;
 const MAX_MAP_ROWS = 42;
 const SYMBOLS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
 
 type LayoutIssue = {
-  kind: 'part-overlap' | 'wire-through-part' | 'wire-crossing' | 'wire-overlap' | 'diagonal-waypoints' | 'too-many-bends' | 'long-route';
+  kind: 'part-overlap' | 'wire-through-part' | 'wire-crossing' | 'wire-overlap' | 'diagonal-waypoints' | 'too-many-bends' | 'long-route' | 'pin-exit' | 'wire-backtrack' | 'wire-color';
   severity: 'warning' | 'error';
   itemIds: string[];
   message: string;
 };
 
 type Rect = { x: number; y: number; width: number; height: number };
-
-type Segment = { a: WirePoint; b: WirePoint };
-
-/**
- * Convert an agent grid coordinate to canvas pixels.
- * Grid (0,0) = canvas center (CANVAS_CENTER_X, CANVAS_CENTER_Y).
- * Positive X is right, positive Y is down.
- */
-export function gridPointToCanvas(point: WirePoint): WirePoint {
-  return {
-    x: point.x * AGENT_GRID_SIZE + CANVAS_CENTER_X,
-    y: point.y * AGENT_GRID_SIZE + CANVAS_CENTER_Y,
-  };
-}
-
-/**
- * Convert canvas pixels to an agent grid coordinate.
- * Grid (0,0) = canvas center. Returns integers (rounded).
- */
-export function canvasPointToGrid(point: WirePoint): WirePoint {
-  return {
-    x: Math.round((point.x - CANVAS_CENTER_X) / AGENT_GRID_SIZE),
-    y: Math.round((point.y - CANVAS_CENTER_Y) / AGENT_GRID_SIZE),
-  };
-}
-
-export function gridPartPlacement(point: WirePoint) {
-  const canvas = gridPointToCanvas(point);
-  return { left: canvas.x, top: canvas.y };
-}
-
-function rectsOverlap(a: Rect, b: Rect, inset = 0) {
+type Segment = { a: WirePoint; b: WirePoint };function rectsOverlap(a: Rect, b: Rect, inset = 0) {
   return a.x + inset < b.x + b.width - inset
     && a.x + a.width - inset > b.x + inset
     && a.y + inset < b.y + b.height - inset
     && a.y + a.height - inset > b.y + inset;
+}
+
+function segmentDirection(a: WirePoint, b: WirePoint): CardinalDirection | null {
+  const dx = b.x - a.x;
+  const dy = b.y - a.y;
+  if (Math.abs(dx) < 0.5 && Math.abs(dy) < 0.5) return null;
+  if (Math.abs(dx) >= Math.abs(dy)) return dx >= 0 ? 'right' : 'left';
+  return dy >= 0 ? 'down' : 'up';
+}
+
+function oppositeDirection(direction: CardinalDirection): CardinalDirection {
+  if (direction === 'left') return 'right';
+  if (direction === 'right') return 'left';
+  if (direction === 'up') return 'down';
+  return 'up';
+}
+
+function endpointPart(endpoint: string, parts: CircuitPart[]) {
+  const id = endpointParts(endpoint)?.partId;
+  return id ? parts.find((part) => part.id === id) : undefined;
+}
+
+function backtrackDistance(points: WirePoint[]) {
+  if (points.length < 2) return 0;
+  const overallDx = points.at(-1)!.x - points[0].x;
+  const overallDy = points.at(-1)!.y - points[0].y;
+  let total = 0;
+  for (let i = 0; i < points.length - 1; i++) {
+    const dx = points[i + 1].x - points[i].x;
+    const dy = points[i + 1].y - points[i].y;
+    if (Math.abs(overallDx) >= AGENT_GRID_SIZE * 3 && Math.sign(dx) && Math.sign(dx) !== Math.sign(overallDx)) total += Math.abs(dx);
+    if (Math.abs(overallDy) >= AGENT_GRID_SIZE * 3 && Math.sign(dy) && Math.sign(dy) !== Math.sign(overallDy)) total += Math.abs(dy);
+  }
+  return total;
+}
+
+/**
+ * Physical connector leads sometimes have to move briefly away from the final
+ * destination before the cable can turn into a routing lane. Those compulsory
+ * first/last segments are not layout backtracking and should not make an
+ * otherwise monotonic route look worse. Keep the evaluator strict about the
+ * route between those leads.
+ */
+function routingInteriorPoints(connection: CircuitConnection, points: WirePoint[], parts: CircuitPart[]) {
+  if (points.length < 2) return points;
+  let startIndex = 0;
+  let endIndex = points.length;
+
+  const fromPart = endpointPart(connection.from, parts);
+  if (fromPart && !fromPart.seating) {
+    const expected = pinExitDirection(connection.from, parts);
+    const actual = segmentDirection(points[0], points[1]);
+    const next = points.length >= 3 ? segmentDirection(points[1], points[2]) : null;
+    // Only discount a compulsory pin lead when the route actually continues
+    // away from it. A wire that exits correctly and immediately doubles back
+    // over the same lead is real backtracking and must stay visible to scoring.
+    if (expected && actual === expected && next !== oppositeDirection(expected)) startIndex = 1;
+  }
+
+  const toPart = endpointPart(connection.to, parts);
+  if (toPart && !toPart.seating && endIndex - startIndex >= 2) {
+    const expectedExit = pinExitDirection(connection.to, parts);
+    const expectedApproach = expectedExit ? oppositeDirection(expectedExit) : null;
+    const actualApproach = segmentDirection(points.at(-2)!, points.at(-1)!);
+    const previous = points.length >= 3 ? segmentDirection(points.at(-3)!, points.at(-2)!) : null;
+    if (expectedApproach && actualApproach === expectedApproach && previous !== expectedExit) endIndex -= 1;
+  }
+
+  return points.slice(startIndex, endIndex);
+}
+
+function doublesBackOverEndpointLead(connection: CircuitConnection, points: WirePoint[], parts: CircuitPart[]) {
+  if (points.length < 3) return false;
+  const fromPart = endpointPart(connection.from, parts);
+  if (fromPart && !fromPart.seating) {
+    const expected = pinExitDirection(connection.from, parts);
+    const first = segmentDirection(points[0], points[1]);
+    const second = segmentDirection(points[1], points[2]);
+    if (expected && first === expected && second === oppositeDirection(expected)) return true;
+  }
+
+  const toPart = endpointPart(connection.to, parts);
+  if (toPart && !toPart.seating) {
+    const expectedExit = pinExitDirection(connection.to, parts);
+    const expectedApproach = expectedExit ? oppositeDirection(expectedExit) : null;
+    const approach = segmentDirection(points.at(-2)!, points.at(-1)!);
+    const beforeApproach = segmentDirection(points.at(-3)!, points.at(-2)!);
+    if (expectedApproach && approach === expectedApproach && beforeApproach === expectedExit) return true;
+  }
+  return false;
+}
+
+function bendCount(points: WirePoint[]) {
+  let bends = 0;
+  let previousAxis: WireAxis | null = null;
+  for (let index = 0; index < points.length - 1; index++) {
+    const a = points[index];
+    const b = points[index + 1];
+    const dx = Math.abs(b.x - a.x);
+    const dy = Math.abs(b.y - a.y);
+    if (dx < 0.01 && dy < 0.01) continue;
+    const axis: WireAxis = dx >= dy ? 'horizontal' : 'vertical';
+    if (previousAxis && axis !== previousAxis) bends++;
+    previousAxis = axis;
+  }
+  return bends;
 }
 
 function intendedOverlap(a: CircuitPart, b: CircuitPart) {
@@ -138,6 +216,20 @@ function segmentIntersectionPoint(first: Segment, second: Segment): WirePoint | 
   };
 }
 
+function intersectionNearSharedPart(first: CircuitConnection, second: CircuitConnection, point: WirePoint, parts: CircuitPart[]) {
+  const firstIds = [first.from, first.to].map((endpoint) => endpointParts(endpoint)?.partId).filter(Boolean);
+  const secondIds = new Set([second.from, second.to].map((endpoint) => endpointParts(endpoint)?.partId).filter(Boolean));
+  for (const id of firstIds) {
+    if (!id || !secondIds.has(id)) continue;
+    const part = parts.find((candidate) => candidate.id === id);
+    if (!part) continue;
+    const rect = partRect(part);
+    const margin = AGENT_GRID_SIZE * 1.1;
+    if (point.x >= rect.x - margin && point.x <= rect.x + rect.width + margin
+      && point.y >= rect.y - margin && point.y <= rect.y + rect.height + margin) return true;
+  }
+  return false;
+}
 function segmentsShareOnlyEndpoint(first: Segment, second: Segment) {
   return near(first.a, second.a, 1)
     || near(first.a, second.b, 1)
@@ -178,11 +270,6 @@ function wirePoints(connection: CircuitConnection, parts: CircuitPart[]) {
 
 function wireSegments(connection: CircuitConnection, parts: CircuitPart[]) {
   const points = wirePoints(connection, parts);
-  return points.slice(0, -1).map((point, index) => ({ a: point, b: points[index + 1] }));
-}
-
-function authoredSegments(connection: CircuitConnection) {
-  const points = connection.waypoints ?? [];
   return points.slice(0, -1).map((point, index) => ({ a: point, b: points[index + 1] }));
 }
 
@@ -231,6 +318,58 @@ export function evaluateLayout(document: Pick<CircuitDocument, 'parts' | 'connec
     }
 
     const authored = connection.waypoints ?? [];
+    const start = endpointPoint(connection.from, parts);
+    const end = endpointPoint(connection.to, parts);
+    const fullPoints = start && end ? connectionPolyline(start, authored, end) : [];
+    const fromPart = endpointPart(connection.from, parts);
+    const toPart = endpointPart(connection.to, parts);
+    if (fullPoints.length >= 2 && !fromPart?.seating) {
+      const expected = pinExitDirection(connection.from, parts);
+      const actual = segmentDirection(fullPoints[0], fullPoints[1]);
+      if (expected && actual && expected !== actual) {
+        issues.push({
+          kind: 'pin-exit',
+          severity: 'warning',
+          itemIds: [connection.id, fromPart?.id ?? ''],
+          message: `${connection.id} leaves ${connection.from} toward ${actual}, but that pin faces ${expected}. Exit the pin in its outward direction before turning.`,
+        });
+      }
+    }
+    if (fullPoints.length >= 2 && !toPart?.seating) {
+      const expectedExit = pinExitDirection(connection.to, parts);
+      const actualApproach = segmentDirection(fullPoints.at(-2)!, fullPoints.at(-1)!);
+      const expectedApproach = expectedExit ? oppositeDirection(expectedExit) : null;
+      if (expectedApproach && actualApproach && expectedApproach !== actualApproach) {
+        issues.push({
+          kind: 'pin-exit',
+          severity: 'warning',
+          itemIds: [connection.id, toPart?.id ?? ''],
+          message: `${connection.id} approaches ${connection.to} from ${actualApproach}, but the clean approach is ${expectedApproach}. Align with the destination pin before entering it.`,
+        });
+      }
+    }
+    const routingInterior = routingInteriorPoints(connection, fullPoints, parts);
+    const backtrack = backtrackDistance(routingInterior);
+    const endpointLeadReversal = doublesBackOverEndpointLead(connection, fullPoints, parts);
+    if (endpointLeadReversal || backtrack >= AGENT_GRID_SIZE * 2.5) {
+      issues.push({
+        kind: 'wire-backtrack',
+        severity: 'warning',
+        itemIds: [connection.id],
+        message: endpointLeadReversal
+          ? `${connection.id} exits a connector and immediately doubles back over the same lead. Continue away from the pin before turning.`
+          : `${connection.id} reverses about ${Math.round(backtrack / AGENT_GRID_SIZE)} grid cells inside its routing corridor. Prefer a monotonic route unless an obstacle requires the detour.`,
+      });
+    }
+    if (!wireColorMatchesStandard(connection.from, connection.to, connection.color)) {
+      const kind = inferWireKind(connection.from, connection.to);
+      issues.push({
+        kind: 'wire-color',
+        severity: 'warning',
+        itemIds: [connection.id],
+        message: `${connection.id} is a ${kind} connection but uses ${connection.color}. Use the standard power/ground color convention so the circuit is readable at a glance.`,
+      });
+    }
     const diagonalPair = authored.slice(0, -1).findIndex((point, index) => !isOrthogonalPair(point, authored[index + 1]));
     if (diagonalPair >= 0) {
       issues.push({
@@ -241,25 +380,26 @@ export function evaluateLayout(document: Pick<CircuitDocument, 'parts' | 'connec
       });
     }
 
-    // Segments between waypoints = bends. Cap at 2 bends (3 waypoints) for clean cable management.
-    const authoredBends = Math.max(0, authored.length - 1);
-    if (authoredBends > 3) {
+    // Endpoint lead-in/out elbows are sometimes required to leave a physical pin cleanly.
+    // Count actual direction changes only inside the routing corridor.
+    const interiorBends = bendCount(routingInterior);
+    if (interiorBends > 6) {
       issues.push({
         kind: 'too-many-bends',
         severity: 'warning',
         itemIds: [connection.id],
-        message: `${connection.id} has ${authoredBends} bends (waypoints). Aim for ≤2 bends: exit the pin, travel in one direction, turn once, arrive at the destination.`,
+        message: `${connection.id} has ${interiorBends} routing bends. Aim for <=6 interior bends: exit cleanly, travel in a clear lane, then approach the destination.`,
       });
     }
-    if (authored.length >= 2) {
-      const direct = Math.hypot(authored.at(-1)!.x - authored[0].x, authored.at(-1)!.y - authored[0].y);
-      const routed = routeLength(authored);
+    if (routingInterior.length >= 2) {
+      const direct = Math.hypot(routingInterior.at(-1)!.x - routingInterior[0].x, routingInterior.at(-1)!.y - routingInterior[0].y);
+      const routed = routeLength(routingInterior);
       if (direct > 80 && routed > direct * 2.7) {
         issues.push({
           kind: 'long-route',
           severity: 'warning',
           itemIds: [connection.id],
-          message: `${connection.id}'s authored lane is ${Math.round(routed / direct * 10) / 10}x longer than its direct interior span. Shorten it if the route stays clear.`,
+          message: `${connection.id}'s routing corridor is ${Math.round(routed / direct * 10) / 10}x longer than its direct interior span. Shorten it if the route stays clear.`,
         });
       }
     }
@@ -270,27 +410,27 @@ export function evaluateLayout(document: Pick<CircuitDocument, 'parts' | 'connec
       const first = connections[firstIndex];
       const second = connections[secondIndex];
       let overlap = 0;
-      for (const firstSegment of authoredSegments(first)) {
-        for (const secondSegment of authoredSegments(second)) {
+      for (const firstSegment of wireSegments(first, parts)) {
+        for (const secondSegment of wireSegments(second, parts)) {
           overlap = Math.max(overlap, parallelOverlapLength(firstSegment, secondSegment));
         }
       }
-      if (overlap >= AGENT_GRID_SIZE * 0.6) {
+      if (overlap >= BREADBOARD_HOLE_PITCH * 1.5) {
         issues.push({
           kind: 'wire-overlap',
           severity: 'warning',
           itemIds: [first.id, second.id],
-          message: `${first.id} overlaps ${second.id} for about ${Math.round(overlap / AGENT_GRID_SIZE)} grid cells. Give each wire its own nearby lane so both remain traceable.`,
+          message: `${first.id} overlaps ${second.id} for about ${Math.max(1, Math.round(overlap / BREADBOARD_HOLE_PITCH))} physical routing lanes. Give each wire its own nearby lane so both remain traceable.`,
         });
       }
 
       let crossing: WirePoint | null = null;
-      outer: for (const firstSegment of authoredSegments(first)) {
-        for (const secondSegment of authoredSegments(second)) {
+      outer: for (const firstSegment of wireSegments(first, parts)) {
+        for (const secondSegment of wireSegments(second, parts)) {
           if (!segmentsIntersect(firstSegment, secondSegment)) continue;
           if (segmentsShareOnlyEndpoint(firstSegment, secondSegment)) continue;
           const point = segmentIntersectionPoint(firstSegment, secondSegment);
-          if (!point || intersectionIsSharedEndpoint(first, second, point, parts)) continue;
+          if (!point || intersectionIsSharedEndpoint(first, second, point, parts) || intersectionNearSharedPart(first, second, point, parts)) continue;
           crossing = point;
           break outer;
         }
@@ -310,11 +450,14 @@ export function evaluateLayout(document: Pick<CircuitDocument, 'parts' | 'connec
   const penalties: Record<LayoutIssue['kind'], number> = {
     'part-overlap': 20,
     'wire-through-part': 20,   // raised: passing through a part body is never acceptable
-    'wire-crossing': 3,
-    'wire-overlap': 6,
+    'wire-crossing': 10,
+    'wire-overlap': 12,
     'diagonal-waypoints': 4,
-    'too-many-bends': 3,       // raised: encourage simpler routes earlier
-    'long-route': 2,
+    'too-many-bends': 4,       // raised: encourage simpler routes earlier
+    'long-route': 3,
+    'pin-exit': 3,
+    'wire-backtrack': 3,
+    'wire-color': 2,
   };
   const score = Math.max(0, 100 - issues.reduce((sum, issue) => sum + penalties[issue.kind], 0));
   const grade = score >= 92 ? 'excellent' : score >= 80 ? 'good' : score >= 65 ? 'needs-work' : 'poor';
@@ -340,28 +483,6 @@ function rasterizeSegment(a: WirePoint, b: WirePoint) {
     if (twice <= dx) { error += dx; y += sy; }
   }
   return cells;
-}
-
-function partGridRect(part: CircuitPart) {
-  const rect = partRect(part);
-  // Use centered grid coordinates: subtract canvas center before dividing
-  const gx = (rect.x - CANVAS_CENTER_X) / AGENT_GRID_SIZE;
-  const gy = (rect.y - CANVAS_CENTER_Y) / AGENT_GRID_SIZE;
-  return {
-    x: Math.floor(gx),
-    y: Math.floor(gy),
-    width: Math.max(1, Math.ceil(rect.width / AGENT_GRID_SIZE)),
-    height: Math.max(1, Math.ceil(rect.height / AGENT_GRID_SIZE)),
-  };
-}
-
-/** Grid size in cells for a given part (rounded up to nearest whole cell). */
-export function partGridSize(part: CircuitPart): { w: number; h: number } {
-  const bounds = getPartBounds(part.type);
-  return {
-    w: Math.max(1, Math.ceil(bounds.width / AGENT_GRID_SIZE)),
-    h: Math.max(1, Math.ceil(bounds.height / AGENT_GRID_SIZE)),
-  };
 }
 
 export function buildAgentLayout(document: Pick<CircuitDocument, 'parts' | 'connections'>) {
@@ -402,10 +523,10 @@ export function buildAgentLayout(document: Pick<CircuitDocument, 'parts' | 'conn
       id: part.id,
       type: part.type,
       grid: { x: rect.x, y: rect.y },
-      gridSize: { w: rect.width, h: rect.height },
+      gridSize: { w: rect.w, h: rect.h },
     };
-    for (let y = rect.y; y < rect.y + rect.height; y++) {
-      for (let x = rect.x; x < rect.x + rect.width; x++) {
+    for (let y = rect.y; y < rect.y + rect.h; y++) {
+      for (let x = rect.x; x < rect.x + rect.w; x++) {
         const row = y - gridTop;
         const column = x - gridLeft;
         if (rows[row]?.[column] !== undefined) rows[row][column] = symbol;
@@ -437,8 +558,8 @@ export function buildAgentLayout(document: Pick<CircuitDocument, 'parts' | 'conn
   const occupiedRows = new Set<number>();
   for (const part of parts) {
     const rect = partGridRect(part);
-    for (let y = rect.y; y < rect.y + rect.height; y++) occupiedRows.add(y);
-    for (let x = rect.x; x < rect.x + rect.width; x++) occupiedCols.add(x);
+    for (let y = rect.y; y < rect.y + rect.h; y++) occupiedRows.add(y);
+    for (let x = rect.x; x < rect.x + rect.w; x++) occupiedCols.add(x);
   }
   const freeRows: number[] = [];
   const freeCols: number[] = [];
@@ -447,9 +568,9 @@ export function buildAgentLayout(document: Pick<CircuitDocument, 'parts' | 'conn
 
   // Suggest the nearest clear lanes above/below and left/right of the part cluster
   const clusterMinRow = parts.length ? Math.min(...parts.map((p) => partGridRect(p).y)) : gridTop;
-  const clusterMaxRow = parts.length ? Math.max(...parts.map((p) => { const r = partGridRect(p); return r.y + r.height - 1; })) : gridBottom;
+  const clusterMaxRow = parts.length ? Math.max(...parts.map((p) => { const r = partGridRect(p); return r.y + r.h - 1; })) : gridBottom;
   const clusterMinCol = parts.length ? Math.min(...parts.map((p) => partGridRect(p).x)) : gridLeft;
-  const clusterMaxCol = parts.length ? Math.max(...parts.map((p) => { const r = partGridRect(p); return r.x + r.width - 1; })) : gridRight;
+  const clusterMaxCol = parts.length ? Math.max(...parts.map((p) => { const r = partGridRect(p); return r.x + r.w - 1; })) : gridRight;
 
   const laneAbove = freeRows.filter((r) => r < clusterMinRow).at(-1) ?? null;
   const laneBelow = freeRows.find((r) => r > clusterMaxRow) ?? null;

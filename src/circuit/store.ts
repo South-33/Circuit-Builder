@@ -1,8 +1,8 @@
 import { defaultCode, getPartPins, PART_DEFINITIONS } from '../components/parts';
 import { findOpenPlacement, CANVAS_CENTER_X, CANVAS_CENTER_Y } from '../layout/placement';
 import { alignExplicitSeating, seatPartAtHole, snapPartPlacement, type BreadboardAnchor, type SnapMode } from '../breadboard/placement';
-import { endpointPoint } from '../wires/geometry';
-import { normalizeWaypoints } from '../wires/path';
+import { endpointPoint, pinExitDirection } from '../wires/geometry';
+import { isOrthogonalPair, normalizeWaypoints, simplifyWirePoints } from '../wires/path';
 import { isBreadboardType } from '../breadboard/geometry';
 import type {
   CircuitConnection,
@@ -35,6 +35,35 @@ function nextNumericId(existing: string[], prefix: string) {
     if (match) max = Math.max(max, Number(match[1]));
   }
   return `${prefix}${max + 1}`;
+}
+
+function rewireWaypoints(
+  from: string,
+  to: string,
+  waypoints: WirePoint[],
+  parts: CircuitPart[],
+) {
+  const start = endpointPoint(from, parts);
+  const end = endpointPoint(to, parts);
+  if (!start || !end) return structuredClone(waypoints);
+
+  const points = simplifyWirePoints(waypoints);
+  const first = points[0] ?? end;
+  if (!isOrthogonalPair(start, first)) {
+    const direction = pinExitDirection(from, parts);
+    points.unshift(direction === 'up' || direction === 'down'
+      ? { x: start.x, y: first.y }
+      : { x: first.x, y: start.y });
+  }
+
+  const last = points.at(-1) ?? start;
+  if (!isOrthogonalPair(last, end)) {
+    const direction = pinExitDirection(to, parts);
+    points.push(direction === 'left' || direction === 'right'
+      ? { x: last.x, y: end.y }
+      : { x: end.x, y: last.y });
+  }
+  return normalizeWaypoints(start, simplifyWirePoints(points), end);
 }
 
 class CircuitStore {
@@ -103,23 +132,28 @@ class CircuitStore {
 
   addPart(type: PartType, left: number, top: number, attrs: PartAttrs = {}) {
     const id = nextNumericId(this.state.parts.map((part) => part.id), PART_DEFINITIONS[type].idPrefix);
-    const placement = findOpenPlacement(type, this.state.parts, { left, top });
-    const part: CircuitPart = {
+    const open = findOpenPlacement(type, this.state.parts, { left, top });
+    const draft: CircuitPart = {
       id,
       type,
-      left: Math.round(placement.left),
-      top: Math.round(placement.top),
+      left: open.left,
+      top: open.top,
       attrs: { ...PART_DEFINITIONS[type].defaults, ...attrs },
       ...(type === 'wokwi-arduino-uno' ? { code: defaultCode() } : {}),
     };
+    // New parts should be born on the same physical connector lattice used by
+    // breadboards and wire bends. Do not wait for the first manual drag to fix
+    // their phase, and do not round away the sub-pixel 9.6px pitch.
+    const snapped = snapPartPlacement(draft, open.left, open.top, this.state.parts, 'normal', 0);
+    const part: CircuitPart = { ...draft, left: snapped.left, top: snapped.top, seating: snapped.seating };
     this.commit([...this.state.parts, part], this.state.connections, part.id);
     return part;
   }
 
-  movePart(id: string, left: number, top: number, recordHistory = true, snapMode: SnapMode = 'normal') {
+  movePart(id: string, left: number, top: number, recordHistory = true, snapMode: SnapMode = 'normal', alignmentThreshold = 6) {
     const current = this.state.parts.find((part) => part.id === id);
     if (!current) return;
-    const placement = snapPartPlacement(current, left, top, this.state.parts, snapMode);
+    const placement = snapPartPlacement(current, left, top, this.state.parts, snapMode, alignmentThreshold);
     const moved: CircuitPart = {
       ...current,
       left: placement.left,
@@ -143,12 +177,17 @@ class CircuitStore {
     }
     if (recordHistory) this.commit(parts, this.state.connections, id);
     else this.setTransient({ parts, selectedId: id });
+    return placement;
   }
 
   rotatePart(id: string, rotate: number) {
-    const parts = this.state.parts.map((part) =>
-      part.id === id ? { ...part, rotate } : part,
-    );
+    const current = this.state.parts.find((part) => part.id === id);
+    if (!current) return;
+    const rotated: CircuitPart = { ...current, rotate };
+    const snapped = snapPartPlacement(rotated, rotated.left, rotated.top, this.state.parts, 'normal', 0);
+    const parts = this.state.parts.map((part) => part.id === id
+      ? { ...rotated, left: snapped.left, top: snapped.top, seating: snapped.seating }
+      : part);
     this.commit(parts, this.state.connections, id);
   }
 
@@ -210,8 +249,8 @@ class CircuitStore {
       let part: CircuitPart = {
         id,
         type: candidate.type,
-        left: Math.round(placement.left),
-        top: Math.round(placement.top),
+        left: placement.left,
+        top: placement.top,
         rotate: computedRotate,
         attrs: {
           ...PART_DEFINITIONS[candidate.type].defaults,
@@ -272,9 +311,20 @@ class CircuitStore {
     if (options.waypoints !== undefined) {
       const start = endpointPoint(from, this.state.parts);
       const end = endpointPoint(to, this.state.parts);
-      connection.waypoints = start && end
-        ? normalizeWaypoints(start, options.waypoints, end)
-        : structuredClone(options.waypoints);
+      if (start && end) {
+        const authored = normalizeWaypoints(start, options.waypoints, end);
+        const points = [...authored];
+        const last = points.at(-1) ?? start;
+        if (!isOrthogonalPair(last, end)) {
+          const direction = pinExitDirection(to, this.state.parts);
+          points.push(direction === 'left' || direction === 'right'
+            ? { x: last.x, y: end.y }
+            : { x: end.x, y: last.y });
+        }
+        connection.waypoints = simplifyWirePoints(points);
+      } else {
+        connection.waypoints = structuredClone(options.waypoints);
+      }
     } else {
       connection.waypoints = [];
     }
@@ -344,6 +394,28 @@ class CircuitStore {
     );
     if (recordHistory) this.commit(this.state.parts, connections, id);
     else this.setTransient({ connections, selectedId: id });
+  }
+
+  setConnectionEndpoint(id: string, side: 'from' | 'to', endpoint: string) {
+    const existing = this.state.connections.find((connection) => connection.id === id);
+    if (!existing) return;
+    const other = side === 'from' ? existing.to : existing.from;
+    if (endpoint === other) throw new Error('A wire cannot connect both ends to the same pin.');
+    if (!endpointPoint(endpoint, this.state.parts)) throw new Error(`Unknown wire endpoint: ${endpoint}`);
+
+    const from = side === 'from' ? endpoint : existing.from;
+    const to = side === 'to' ? endpoint : existing.to;
+    const duplicate = this.state.connections.find((connection) => connection.id !== id && (
+      (connection.from === from && connection.to === to)
+      || (connection.from === to && connection.to === from)
+    ));
+    if (duplicate) throw new Error(`That connection already exists as ${duplicate.id}.`);
+
+    const waypoints = rewireWaypoints(from, to, existing.waypoints ?? [], this.state.parts);
+    const connections = this.state.connections.map((connection) =>
+      connection.id === id ? { ...connection, from, to, waypoints } : connection,
+    );
+    this.commit(this.state.parts, connections, id);
   }
 
   previewConnectionWaypoints(id: string, waypoints: WirePoint[]) {

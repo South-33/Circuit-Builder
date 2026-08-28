@@ -1192,12 +1192,24 @@ export default function App() {
     }
   }, [state.focus?.code]);
 
+  const savedScrollRef = useRef<{ scrollLeft: number; scrollTop: number } | null>(null);
+
   useEffect(() => {
     const canvas = canvasRef.current;
-    if (!canvas || circuitStore.getSnapshot().parts.length) return;
+    if (!canvas) return;
+    if (savedScrollRef.current) {
+      canvas.scrollLeft = savedScrollRef.current.scrollLeft;
+      canvas.scrollTop = savedScrollRef.current.scrollTop;
+      return;
+    }
+    if (circuitStore.getSnapshot().parts.length) return;
     canvas.scrollLeft = WORKSPACE_WIDTH / 2 - canvas.clientWidth / 2;
     canvas.scrollTop = WORKSPACE_HEIGHT / 2 - canvas.clientHeight / 2;
-  }, []);
+    savedScrollRef.current = {
+      scrollLeft: canvas.scrollLeft,
+      scrollTop: canvas.scrollTop,
+    };
+  }, [viewMode]);
 
   useEffect(() => {
     const handleKey = (event: KeyboardEvent) => {
@@ -1471,16 +1483,23 @@ export default function App() {
         </div>
       </header>
 
-      {viewMode === 'schematic' ? (
+      {viewMode === 'schematic' && (
         <SchematicView parts={state.parts} connections={state.connections} />
-      ) : viewMode === 'components' ? (
+      )}
+      {viewMode === 'components' && (
         <ComponentsView parts={state.parts} />
-      ) : (
-        <main className="main-area">
-          <div className="canvas-stage">
-            <div
-              ref={canvasRef}
-              className={`canvas-scroll${isPanning ? ' panning' : ''}`}
+      )}
+      <main className="main-area" style={{ display: viewMode === 'circuits' ? 'flex' : 'none' }}>
+        <div className="canvas-stage">
+          <div
+            ref={canvasRef}
+            className={`canvas-scroll${isPanning ? ' panning' : ''}`}
+            onScroll={(event) => {
+              savedScrollRef.current = {
+                scrollLeft: event.currentTarget.scrollLeft,
+                scrollTop: event.currentTarget.scrollTop,
+              };
+            }}
               onWheel={(event) => {
                 event.preventDefault();
                 event.currentTarget.scrollLeft += event.deltaX;
@@ -1612,7 +1631,6 @@ export default function App() {
               />
         )}
       </main>
-      )}
       {bomOpen && <BomModal onClose={() => setBomOpen(false)} />}
     </div>
   );

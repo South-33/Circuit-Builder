@@ -521,28 +521,59 @@ export async function registerWebMCPTools() {
   ];
 
   // 1. Expose universal browser agent discovery & execution functions on window
-  window.__webmcp_tools__ = tools;
-  window.webmcp_list_tools = () =>
-    tools.map((t) => ({
-      name: t.name,
-      description: t.description,
-      inputSchema: t.inputSchema,
-    }));
-  window.webmcp_call_tool = async (name: string, input: Record<string, unknown> = {}) => {
-    const tool = tools.find((t) => t.name === name);
-    if (!tool) throw new Error(`WebMCP tool "${name}" not found.`);
-    return tool.execute(input, options);
-  };
+  if (typeof window !== 'undefined') {
+    window.__webmcp_tools__ = tools;
+    window.webmcp_list_tools = () =>
+      tools.map((t) => ({
+        name: t.name,
+        description: t.description,
+        inputSchema: t.inputSchema,
+      }));
+    window.webmcp_call_tool = async (name: string, input: Record<string, unknown> = {}) => {
+      const tool = tools.find((t) => t.name === name);
+      if (!tool) throw new Error(`WebMCP tool "${name}" not found.`);
+      return tool.execute(input, options);
+    };
+  }
 
-  // 2. Polyfill ModelContext on document, window, and navigator according to WebMCP spec
+  // 2. Capture any pre-existing modelContext on document, window, or navigator
+  const existingDocContext = typeof document !== 'undefined' ? (document as Document & { modelContext?: ModelContext }).modelContext : undefined;
+  const existingWinContext = typeof window !== 'undefined' ? (window as Window & { modelContext?: ModelContext }).modelContext : undefined;
+  const existingNavContext = typeof navigator !== 'undefined' ? (navigator as unknown as { modelContext?: ModelContext }).modelContext : undefined;
+
+  // 3. Register tools on existing native contexts if present
+  try {
+    if (existingDocContext?.registerTool) {
+      for (const tool of tools) await existingDocContext.registerTool(tool, options);
+    }
+    if (existingWinContext?.registerTool && existingWinContext !== existingDocContext) {
+      for (const tool of tools) await existingWinContext.registerTool(tool, options);
+    }
+    if (existingNavContext?.registerTool && existingNavContext !== existingDocContext) {
+      for (const tool of tools) await existingNavContext.registerTool(tool, options);
+    }
+  } catch (error) {
+    console.warn('[WebMCP] Native tool registration warning:', error);
+  }
+
+  // 4. Polyfill ModelContext on document, window, and navigator according to WebMCP spec
   const registered = new Map<string, ToolDefinition>();
   for (const tool of tools) registered.set(tool.name, tool);
 
-  const polyfillModelContext: ModelContext = {
+  const polyfillModelContext: ModelContext & {
+    listTools: () => Promise<Array<{ name: string; description: string; inputSchema?: Record<string, unknown> }>>;
+    callTool: (name: string, input?: Record<string, unknown>) => Promise<unknown>;
+  } = {
     registerTool: async (tool: ToolDefinition) => {
       registered.set(tool.name, tool);
     },
     getTools: async () =>
+      Array.from(registered.values()).map((t) => ({
+        name: t.name,
+        description: t.description,
+        inputSchema: t.inputSchema,
+      })),
+    listTools: async () =>
       Array.from(registered.values()).map((t) => ({
         name: t.name,
         description: t.description,
@@ -553,23 +584,41 @@ export async function registerWebMCPTools() {
       if (!tool) throw new Error(`Tool "${name}" not registered.`);
       return tool.execute(input, options);
     },
+    callTool: async (name: string, input: Record<string, unknown> = {}) => {
+      const tool = registered.get(name);
+      if (!tool) throw new Error(`Tool "${name}" not registered.`);
+      return tool.execute(input, options);
+    },
   };
 
-  const doc = document as Document & { modelContext?: ModelContext };
-  const existingDocContext = doc.modelContext;
-  if (!doc.modelContext) doc.modelContext = polyfillModelContext;
-  if (!window.modelContext) window.modelContext = polyfillModelContext;
-  if (typeof navigator !== 'undefined' && !(navigator as unknown as { modelContext?: ModelContext }).modelContext) {
-    (navigator as unknown as { modelContext?: ModelContext }).modelContext = polyfillModelContext;
-  }
-
-  // 3. Register on native context if provided by a WebMCP-capable browser
-  try {
-    if (existingDocContext?.registerTool) {
-      for (const tool of tools) await existingDocContext.registerTool(tool, options);
+  const defineModelContext = (target: object) => {
+    try {
+      Object.defineProperty(target, 'modelContext', {
+        value: polyfillModelContext,
+        writable: true,
+        configurable: true,
+        enumerable: true,
+      });
+    } catch {
+      try {
+        (target as { modelContext?: unknown }).modelContext = polyfillModelContext;
+      } catch {
+        // Ignore if immutable
+      }
     }
-  } catch (error) {
-    console.warn('[WebMCP] Native tool registration warning:', error);
+  };
+
+  if (typeof window !== 'undefined' && !existingWinContext) {
+    defineModelContext(window);
+    if (typeof Window !== 'undefined' && Window.prototype) defineModelContext(Window.prototype);
+  }
+  if (typeof document !== 'undefined' && !existingDocContext) {
+    defineModelContext(document);
+    if (typeof Document !== 'undefined' && Document.prototype) defineModelContext(Document.prototype);
+  }
+  if (typeof navigator !== 'undefined' && !existingNavContext) {
+    defineModelContext(navigator);
+    if (typeof Navigator !== 'undefined' && Navigator.prototype) defineModelContext(Navigator.prototype);
   }
 
   return true;

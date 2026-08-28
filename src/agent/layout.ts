@@ -47,6 +47,7 @@ function rectsOverlap(a: Rect, b: Rect, inset = 0) {
 function intendedOverlap(a: CircuitPart, b: CircuitPart) {
   if (a.seating?.breadboardId === b.id) return true;
   if (b.seating?.breadboardId === a.id) return true;
+  if (a.seating?.breadboardId && b.seating?.breadboardId && a.seating.breadboardId === b.seating.breadboardId) return true;
   return false;
 }
 
@@ -205,7 +206,7 @@ export function evaluateLayout(document: Pick<CircuitDocument, 'parts' | 'connec
       .filter((value): value is string => Boolean(value)));
     const segments = wireSegments(connection, parts);
     for (const part of parts) {
-      if (endpointPartIds.has(part.id) || isBreadboardType(part.type)) continue;
+      if (endpointPartIds.has(part.id) || isBreadboardType(part.type) || part.seating) continue;
       if (segments.some((segment) => segmentIntersectsRect(segment, partRect(part), 7))) {
         issues.push({
           kind: 'wire-through-part',
@@ -393,50 +394,14 @@ export function buildAgentLayout(document: Pick<CircuitDocument, 'parts' | 'conn
   }
 
   return {
-    coordinateSystem: {
-      cellSizePx: AGENT_GRID_SIZE,
-      placement: 'edit-circuit parts may use grid:{x,y}; grid coordinates address cell intersections and are converted deterministically to pixels.',
-      routing: 'connect-pins uses your gridWaypoints as the authoritative interior path. The workbench only adds a minimal lead-in/out to the exact physical pins; it never autoroutes or later rewrites your lanes.',
-      routingStyle: 'agent-authored-grid-path',
-      routingRules: [
-        'Think like plumbing or road design: long straight horizontal/vertical runs are preferred.',
-        'Use the fewest 90-degree bends that keep the circuit readable.',
-        'Give separate wires separate nearby lanes; never stack unrelated wires on the exact same track.',
-        'Keep wires outside unrelated component footprints and avoid crossings when a nearby clear lane exists.',
-        'It is okay to move components farther apart if that makes the wiring simpler and easier to trace.',
-        'After wiring, inspect quality and repair every error plus avoidable overlap/crossing warning before simulation.',
-      ],
-      workflow: [
-        'Place the major components first with edit-circuit grid coordinates.',
-        'Seat breadboard components by named holes when applicable.',
-        'Request pins only for the parts you are currently wiring.',
-        'Draw each connection explicitly with gridWaypoints.',
-        'Inspect the grid and quality report, repair layout issues, then set code and simulate.',
-      ],
-      breadboardNaming: 'Terminal holes are A1..E<n> and F1..J<n>. Rails are +top1/-top1 and +bottom1/-bottom1. For placement prefer seat:{breadboardId,pin,hole}.',
-    },
     map: {
-      originGrid: { x: gridLeft, y: gridTop },
+      origin: { x: gridLeft, y: gridTop },
       width,
       height,
-      rows: rows.map((row) => row.join('')),
-      legend: { ...legend, '*': 'wire route', X: 'multiple wire routes share this cell' },
+      cols: `     ` + Array.from({ length: width }, (_, i) => ((i + gridLeft) % 5 === 0 ? String((i + gridLeft) % 10) : ' ')).join(''),
+      rows: rows.map((row, idx) => `${String(idx + gridTop).padStart(2, '0')} | ${row.join('')}`),
+      legend: { ...legend, '*': 'wire', X: 'crossing' },
     },
-    parts: parts.map((part) => ({
-      id: part.id,
-      type: part.type,
-      grid: partGridRect(part),
-      pixelSize: getPartBounds(part),
-      pinSummary: PART_DEFINITIONS[part.type].pinSummary,
-      ...(part.seating ? { seating: part.seating } : {}),
-    })),
-    routes: connections.map((connection) => ({
-      id: connection.id,
-      from: connection.from,
-      to: connection.to,
-      gridWaypoints: (connection.waypoints ?? []).map(canvasPointToGrid),
-      bends: connection.waypoints?.length ?? 0,
-    })),
     quality: evaluateLayout(document),
   };
 }

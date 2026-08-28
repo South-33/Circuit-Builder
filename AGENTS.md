@@ -4,10 +4,8 @@ This repository is intentionally small and explicit. Preserve that shape.
 
 ## Before changing code
 
-1. Read `docs/architecture/overview.md`.
-2. For component work, read `docs/guides/adding-components.md`.
-3. For WebMCP/circuit-building work, read `docs/guides/agent-workbench.md`.
-4. Use `pnpm` only.
+1. Read `docs/GUIDE.md` for architecture ownership, component catalog guides, and WebMCP agent workbench specifications.
+2. Use `pnpm` only.
 
 ## Architecture ownership
 
@@ -37,7 +35,7 @@ This repository is intentionally small and explicit. Preserve that shape.
 
 ## Adding a component
 
-Follow `docs/guides/adding-components.md`. In short:
+Follow `docs/GUIDE.md` (Section 2: Adding Components). In short:
 
 1. Add the type to `src/components/partTypes.ts`.
 2. Add its metadata to `src/components/parts.ts`.

@@ -13,6 +13,7 @@ import {
   isGroundPin,
   isPositivePowerPin,
 } from './pins';
+import { breadboardHoleNet } from '../breadboard/geometry';
 
 export function diagnoseCircuit(document: Pick<CircuitDocument, 'parts' | 'connections'>): Diagnostic[] {
   const graph = buildCircuitGraph(document);
@@ -158,6 +159,25 @@ export function diagnoseCircuit(document: Pick<CircuitDocument, 'parts' | 'conne
         message: 'PNP Transistor emitter (E) must be connected to positive power rail (VCC/5V) for high-side switching.',
         itemIds: [transistor.id],
       });
+    }
+  }
+
+  for (const connection of document.connections) {
+    const fromNode = parseNodeRef(connection.from);
+    const toNode = parseNodeRef(connection.to);
+    if (fromNode.partId === toNode.partId) {
+      const part = graph.parts.get(fromNode.partId);
+      if (part && (part.type === 'breadboard' || part.type === 'breadboard-half')) {
+        const netA = breadboardHoleNet(fromNode.pin);
+        const netB = breadboardHoleNet(toNode.pin);
+        if (netA && netB && netA === netB) {
+          diagnostics.push({
+            severity: 'warning',
+            message: `Wire ${connection.id} connects ${connection.from} to ${connection.to} on the same internal breadboard strip (${netA}); this wire is redundant.`,
+            itemIds: [connection.id],
+          });
+        }
+      }
     }
   }
 

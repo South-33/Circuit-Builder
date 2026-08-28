@@ -77,20 +77,28 @@ export class AVRRunner {
       this.executionTimer = window.setTimeout(runChunk, 0);
     };
 
+    const safeRequestAnimationFrame = typeof requestAnimationFrame === 'function'
+      ? requestAnimationFrame
+      : (cb: FrameRequestCallback) => setTimeout(() => cb(performance.now()), 16) as unknown as number;
+
     const frame = () => {
       if (this.stopped) return;
       onFrame?.();
-      this.animationFrame = requestAnimationFrame(frame);
+      this.animationFrame = safeRequestAnimationFrame(frame);
     };
 
     runChunk();
-    this.animationFrame = requestAnimationFrame(frame);
+    this.animationFrame = safeRequestAnimationFrame(frame);
   }
 
   stop() {
     this.stopped = true;
-    if (this.animationFrame !== null) cancelAnimationFrame(this.animationFrame);
-    if (this.executionTimer !== null) window.clearTimeout(this.executionTimer);
+    const safeCancelAnimationFrame = typeof cancelAnimationFrame === 'function'
+      ? cancelAnimationFrame
+      : (id: number) => clearTimeout(id);
+
+    if (this.animationFrame !== null) safeCancelAnimationFrame(this.animationFrame);
+    if (this.executionTimer !== null) (typeof window !== 'undefined' ? window.clearTimeout : clearTimeout)(this.executionTimer);
     this.animationFrame = null;
     this.executionTimer = null;
   }

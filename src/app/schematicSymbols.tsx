@@ -175,6 +175,57 @@ export function getSchematicSymbolDef(part: CircuitPart): SchematicSymbolDef {
     };
   }
 
+  if (type === 'wokwi-led' || type === 'wokwi-rgb-led') {
+    return {
+      width: 70,
+      height: 36,
+      pins: [
+        { name: 'A', x: 0, y: 18, orientation: 'left' },
+        { name: 'anode', x: 0, y: 18, orientation: 'left' },
+        { name: 'C', x: 70, y: 18, orientation: 'right' },
+        { name: 'cathode', x: 70, y: 18, orientation: 'right' },
+      ],
+      render: (p) => (
+        <g>
+          <rect x="15" y="6" width="40" height="24" fill="#fff" stroke="#b83232" strokeWidth="1.4" />
+          <line x1="0" y1="18" x2="15" y2="18" stroke="#b83232" strokeWidth="1.4" />
+          <line x1="55" y1="18" x2="70" y2="18" stroke="#b83232" strokeWidth="1.4" />
+          <text x="35" y="-2" textAnchor="middle" fill="#777" fontSize="10" fontFamily="sans-serif">{p.id.toUpperCase()}</text>
+          <text x="35" y="22" textAnchor="middle" fill="#b83232" fontSize="11" fontWeight="500" fontFamily="sans-serif">LED</text>
+          <text x="18" y="21" fill="#666" fontSize="8" fontFamily="sans-serif">A</text>
+          <text x="52" y="21" textAnchor="end" fill="#666" fontSize="8" fontFamily="sans-serif">C</text>
+        </g>
+      ),
+    };
+  }
+
+  if (type === 'wokwi-pushbutton' || type === 'wokwi-pushbutton-6mm') {
+    return {
+      width: 70,
+      height: 48,
+      pins: [
+        { name: '1.l', x: 0, y: 16, orientation: 'left' },
+        { name: '2.l', x: 0, y: 32, orientation: 'left' },
+        { name: '1.r', x: 70, y: 16, orientation: 'right' },
+        { name: '2.r', x: 70, y: 32, orientation: 'right' },
+      ],
+      render: (p) => (
+        <g>
+          <rect x="15" y="4" width="40" height="40" fill="#fff" stroke="#b83232" strokeWidth="1.4" />
+          <line x1="0" y1="16" x2="15" y2="16" stroke="#b83232" strokeWidth="1.2" />
+          <line x1="0" y1="32" x2="15" y2="32" stroke="#b83232" strokeWidth="1.2" />
+          <line x1="55" y1="16" x2="70" y2="16" stroke="#b83232" strokeWidth="1.2" />
+          <line x1="55" y1="32" x2="70" y2="32" stroke="#b83232" strokeWidth="1.2" />
+          <text x="35" y="-2" textAnchor="middle" fill="#777" fontSize="10" fontFamily="sans-serif">{p.id.toUpperCase()}</text>
+          <text x="18" y="19" fill="#666" fontSize="7.5" fontFamily="sans-serif">1.l</text>
+          <text x="18" y="35" fill="#666" fontSize="7.5" fontFamily="sans-serif">2.l</text>
+          <text x="52" y="19" textAnchor="end" fill="#666" fontSize="7.5" fontFamily="sans-serif">1.r</text>
+          <text x="52" y="35" textAnchor="end" fill="#666" fontSize="7.5" fontFamily="sans-serif">2.r</text>
+        </g>
+      ),
+    };
+  }
+
   if (type === 'dc-motor') {
     return {
       width: 60,

@@ -1,100 +1,52 @@
-﻿import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useMemo, useRef, useState } from 'react';
 import type { CircuitConnection, CircuitPart } from '../circuit/types';
 import { getSchematicSymbolDef } from './schematicSymbols';
 import { computeSchematicInitialLayout, routeSchematicNets } from './schematicEngine';
 import { isBreadboardType } from '../breadboard/geometry';
 
-type PartPos = { left: number; top: number };
-
 export function SchematicView({
   parts,
   connections,
+  zoom = 1,
+  onZoomChange,
 }: {
   parts: CircuitPart[];
   connections: CircuitConnection[];
+  zoom?: number;
+  onZoomChange?: React.Dispatch<React.SetStateAction<number>>;
 }) {
-  const [zoom, setZoom] = useState(1);
+  const [internalZoom, setInternalZoom] = useState(1);
   const [pan, setPan] = useState({ x: 0, y: 0 });
   const [isPanning, setIsPanning] = useState(false);
-  const [positions, setPositions] = useState<Record<string, PartPos>>({});
-  const [draggingPartId, setDraggingPartId] = useState<string | null>(null);
-  const dragStartRef = useRef<{ startX: number; startY: number; partX: number; partY: number } | null>(null);
   const panStartRef = useRef<{ startX: number; startY: number; panX: number; panY: number } | null>(null);
-  const containerRef = useRef<HTMLDivElement | null>(null);
+
+  const activeZoom = onZoomChange ? zoom : internalZoom;
+  const setZoom = onZoomChange ?? setInternalZoom;
 
   const nonBreadboardParts = useMemo(() => {
     return parts.filter((p) => !isBreadboardType(p.type));
   }, [parts]);
 
-  // Compute smart initial positions matching Tinkercad schematic layout
-  useEffect(() => {
-    setPositions((prev) => {
-      const initial = computeSchematicInitialLayout(parts);
-      const next = { ...prev };
-      let changed = false;
-
-      for (const [id, pos] of Object.entries(initial)) {
-        if (!next[id]) {
-          next[id] = pos;
-          changed = true;
-        }
-      }
-      return changed ? next : prev;
-    });
+  const positions = useMemo(() => {
+    return computeSchematicInitialLayout(parts);
   }, [parts]);
 
   const { wires, powerMarkers } = useMemo(() => {
     return routeSchematicNets(parts, connections, positions);
   }, [parts, connections, positions]);
 
-  const handlePrint = () => {
-    window.print();
+  const currentDate = useMemo(() => {
+    const d = new Date();
+    return `${d.getMonth() + 1}/${d.getDate()}/${d.getFullYear()}, ${d.toLocaleTimeString()}`;
+  }, []);
+
+  const handleWheel = (e: React.WheelEvent) => {
+    e.preventDefault();
+    const factor = e.deltaY < 0 ? 1.08 : 0.92;
+    setZoom((prev) => Math.max(0.4, Math.min(3.0, prev * factor)));
   };
 
-  const resetView = () => {
-    setZoom(1);
-    setPan({ x: 0, y: 0 });
-  };
-
-  // Dragging schematic part
-  const handlePartPointerDown = (e: React.PointerEvent, partId: string) => {
-    e.stopPropagation();
-    const currentPos = positions[partId] ?? { left: 100, top: 100 };
-    dragStartRef.current = {
-      startX: e.clientX,
-      startY: e.clientY,
-      partX: currentPos.left,
-      partY: currentPos.top,
-    };
-    setDraggingPartId(partId);
-    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
-  };
-
-  const handlePartPointerMove = (e: React.PointerEvent) => {
-    if (!dragStartRef.current || !draggingPartId) return;
-    const dx = (e.clientX - dragStartRef.current.startX) / zoom;
-    const dy = (e.clientY - dragStartRef.current.startY) / zoom;
-    const nextLeft = Math.round((dragStartRef.current.partX + dx) / 10) * 10;
-    const nextTop = Math.round((dragStartRef.current.partY + dy) / 10) * 10;
-    setPositions((prev) => ({
-      ...prev,
-      [draggingPartId]: {
-        left: Math.max(30, Math.min(1100, nextLeft)),
-        top: Math.max(30, Math.min(720, nextTop)),
-      },
-    }));
-  };
-
-  const handlePartPointerUp = (e: React.PointerEvent) => {
-    if (dragStartRef.current) {
-      dragStartRef.current = null;
-      setDraggingPartId(null);
-      try { (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId); } catch { /* ignore */ }
-    }
-  };
-
-  // Canvas Pan
-  const handleCanvasPointerDown = (e: React.PointerEvent) => {
+  const handlePointerDown = (e: React.PointerEvent) => {
     if (e.button !== 0) return;
     panStartRef.current = {
       startX: e.clientX,
@@ -106,7 +58,7 @@ export function SchematicView({
     (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
   };
 
-  const handleCanvasPointerMove = (e: React.PointerEvent) => {
+  const handlePointerMove = (e: React.PointerEvent) => {
     if (!panStartRef.current) return;
     const dx = e.clientX - panStartRef.current.startX;
     const dy = e.clientY - panStartRef.current.startY;
@@ -116,67 +68,99 @@ export function SchematicView({
     });
   };
 
-  const handleCanvasPointerUp = (e: React.PointerEvent) => {
-    if (panStartRef.current) {
-      panStartRef.current = null;
-      setIsPanning(false);
-      try { (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId); } catch { /* ignore */ }
-    }
+  const handlePointerUp = (e: React.PointerEvent) => {
+    panStartRef.current = null;
+    setIsPanning(false);
+    try { (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId); } catch { /* ignore */ }
   };
 
-  const handleWheel = (e: React.WheelEvent) => {
-    e.preventDefault();
-    const factor = e.deltaY < 0 ? 1.1 : 0.9;
-    setZoom((prev) => Math.max(0.4, Math.min(2.5, prev * factor)));
+  const resetView = () => {
+    setZoom(1);
+    setPan({ x: 0, y: 0 });
   };
 
   return (
     <div className="schematic-view-page">
-      <div className="schematic-view-header">
-        <div className="schematic-header-left">
-          <h2>Schematic View</h2>
-          <span className="schematic-part-count">
-            {nonBreadboardParts.length} {nonBreadboardParts.length === 1 ? 'component' : 'components'} · {wires.length} {wires.length === 1 ? 'net' : 'nets'}
-          </span>
-        </div>
-        <div className="schematic-controls">
-          <button type="button" className="schematic-tool-btn" onClick={() => setZoom((z) => Math.min(2.5, z * 1.15))} title="Zoom In">+</button>
-          <span className="schematic-zoom-label">{Math.round(zoom * 100)}%</span>
-          <button type="button" className="schematic-tool-btn" onClick={() => setZoom((z) => Math.max(0.4, z / 1.15))} title="Zoom Out">−</button>
-          <button type="button" className="schematic-tool-btn reset-btn" onClick={resetView} title="Fit sheet">Reset</button>
-          <button type="button" className="pdf-download-btn" onClick={handlePrint}>
-            <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" strokeWidth="2"><path d="M6 9V2h12v7"/><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><rect x="6" y="14" width="12" height="8"/></svg>
-            Download PDF / Print
-          </button>
-        </div>
-      </div>
-
       <div
-        ref={containerRef}
         className={`schematic-canvas-wrap${isPanning ? ' panning' : ''}`}
-        onPointerDown={handleCanvasPointerDown}
-        onPointerMove={handleCanvasPointerMove}
-        onPointerUp={handleCanvasPointerUp}
-        onPointerCancel={handleCanvasPointerUp}
         onWheel={handleWheel}
+        onPointerDown={handlePointerDown}
+        onPointerMove={handlePointerMove}
+        onPointerUp={handlePointerUp}
+        onPointerCancel={handlePointerUp}
       >
         <div
           className="schematic-sheet-container"
           style={{
-            transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`,
+            transform: `translate(${pan.x}px, ${pan.y}px) scale(${activeZoom})`,
             transformOrigin: 'center center',
           }}
         >
           <svg
             className="schematic-svg-frame"
             viewBox="0 0 1200 800"
-            width="1200"
-            height="800"
+            width="100%"
+            height="100%"
           >
             {/* Sheet background */}
             <rect x="0" y="0" width="1200" height="800" fill="#ffffff" />
 
-            {/* Schematic Net Connections (Tinkercad sea-green wires #5ab69b) */}
+            {/* Outer Engineering Borders (Tinkercad Crimson #d85c5c) */}
+            <rect x="14" y="14" width="1172" height="772" fill="none" stroke="#d85c5c" strokeWidth="1.2" />
+            <rect x="28" y="28" width="1144" height="744" fill="none" stroke="#d85c5c" strokeWidth="0.8" />
+
+            {/* Coordinate Grid Ticks (1..6 on top and bottom, A..E on left and right) */}
+            {[
+              { label: '1', x: 130 },
+              { label: '2', x: 310 },
+              { label: '3', x: 490 },
+              { label: '4', x: 670 },
+              { label: '5', x: 850 },
+              { label: '6', x: 1030 },
+            ].map((col) => (
+              <g key={col.label}>
+                <line x1={col.x} y1="14" x2={col.x} y2="28" stroke="#d85c5c" strokeWidth="0.8" />
+                <line x1={col.x} y1="772" x2={col.x} y2="786" stroke="#d85c5c" strokeWidth="0.8" />
+                <text x={col.x} y="24" textAnchor="middle" fill="#d85c5c" fontSize="11" fontFamily="sans-serif">{col.label}</text>
+                <text x={col.x} y="782" textAnchor="middle" fill="#d85c5c" fontSize="11" fontFamily="sans-serif">{col.label}</text>
+              </g>
+            ))}
+
+            {[
+              { label: 'A', y: 110 },
+              { label: 'B', y: 250 },
+              { label: 'C', y: 390 },
+              { label: 'D', y: 530 },
+              { label: 'E', y: 670 },
+            ].map((row) => (
+              <g key={row.label}>
+                <line x1="14" y1={row.y} x2="28" y2={row.y} stroke="#d85c5c" strokeWidth="0.8" />
+                <line x1="1172" y1={row.y} x2="1186" y2={row.y} stroke="#d85c5c" strokeWidth="0.8" />
+                <text x="22" y={row.y + 4} textAnchor="middle" fill="#d85c5c" fontSize="11" fontFamily="sans-serif">{row.label}</text>
+                <text x="1180" y={row.y + 4} textAnchor="middle" fill="#d85c5c" fontSize="11" fontFamily="sans-serif">{row.label}</text>
+              </g>
+            ))}
+
+            {/* Bottom-Left Tinkercad Watermark */}
+            <text x="42" y="756" fill="#d85c5c" fontSize="13" fontWeight="500" fontFamily="sans-serif">Made with Tinkercad®</text>
+
+            {/* Bottom-Right Title Block */}
+            <g transform="translate(730, 700)">
+              <rect x="0" y="0" width="442" height="72" fill="#fff" stroke="#d85c5c" strokeWidth="0.8" />
+              <line x1="0" y1="36" x2="442" y2="36" stroke="#d85c5c" strokeWidth="0.8" />
+              <line x1="310" y1="36" x2="310" y2="72" stroke="#d85c5c" strokeWidth="0.8" />
+
+              <text x="14" y="23" fill="#888" fontSize="11" fontFamily="sans-serif">Title:</text>
+              <text x="56" y="23" fill="#555" fontSize="12" fontWeight="500" fontFamily="sans-serif">Circuit Schematic</text>
+
+              <text x="14" y="58" fill="#888" fontSize="11" fontFamily="sans-serif">Date:</text>
+              <text x="56" y="58" fill="#555" fontSize="11" fontFamily="sans-serif">{currentDate}</text>
+
+              <text x="324" y="58" fill="#888" fontSize="11" fontFamily="sans-serif">Sheet:</text>
+              <text x="372" y="58" fill="#555" fontSize="11" fontFamily="sans-serif">1/1</text>
+            </g>
+
+            {/* Schematic Net Connections (Tinkercad sea-green wires #5fa896) */}
             <g className="schematic-nets">
               {wires.map((wire) => {
                 const d = wire.points.reduce((acc, pt, i) => `${acc} ${i === 0 ? 'M' : 'L'} ${pt.x} ${pt.y}`, '');
@@ -186,14 +170,14 @@ export function SchematicView({
                     <path
                       d={d}
                       fill="none"
-                      stroke="#5ab69b"
-                      strokeWidth="1.3"
+                      stroke="#5fa896"
+                      strokeWidth="1.1"
                       strokeLinejoin="round"
                       strokeLinecap="round"
                     />
                     {/* Junction dots */}
-                    <circle cx={wire.fromPos.x} cy={wire.fromPos.y} r="2.2" fill="#5ab69b" />
-                    <circle cx={wire.toPos.x} cy={wire.toPos.y} r="2.2" fill="#5ab69b" />
+                    <circle cx={wire.fromPos.x} cy={wire.fromPos.y} r="1.8" fill="#5fa896" />
+                    <circle cx={wire.toPos.x} cy={wire.toPos.y} r="1.8" fill="#5fa896" />
                   </g>
                 );
               })}
@@ -205,47 +189,33 @@ export function SchematicView({
                 <g key={marker.id} transform={`translate(${marker.x}, ${marker.y})`}>
                   {marker.direction === 'up' ? (
                     <>
-                      <line x1="0" y1="0" x2="0" y2="-12" stroke="#b83232" strokeWidth="1.4" />
-                      <polygon points="0,-18 -4,-12 4,-12" fill="none" stroke="#b83232" strokeWidth="1.2" />
-                      <text x="0" y="-24" textAnchor="middle" fill="#999" fontSize="10" fontFamily="sans-serif">{marker.label}</text>
+                      <line x1="0" y1="0" x2="0" y2="-12" stroke="#b83232" strokeWidth="1.2" />
+                      <polygon points="0,-18 -4,-12 4,-12" fill="none" stroke="#b83232" strokeWidth="1.1" />
+                      <text x="0" y="-23" textAnchor="middle" fill="#888" fontSize="9.5" fontFamily="sans-serif">{marker.label}</text>
                     </>
                   ) : (
                     <>
-                      <line x1="0" y1="0" x2="0" y2="12" stroke="#b83232" strokeWidth="1.4" />
-                      <polygon points="0,18 -4,12 4,12" fill="none" stroke="#b83232" strokeWidth="1.2" />
-                      <text x="0" y="30" textAnchor="middle" fill="#999" fontSize="10" fontFamily="sans-serif">{marker.label}</text>
+                      <line x1="0" y1="0" x2="0" y2="12" stroke="#b83232" strokeWidth="1.2" />
+                      <polygon points="0,18 -4,12 4,12" fill="none" stroke="#b83232" strokeWidth="1.1" />
+                      <text x="0" y="28" textAnchor="middle" fill="#888" fontSize="9.5" fontFamily="sans-serif">{marker.label}</text>
                     </>
                   )}
                 </g>
               ))}
             </g>
 
-            {/* Schematic Symbols (Interactive & Draggable) */}
+            {/* Schematic Symbols (Clean, Static, High-Fidelity) */}
             <g className="schematic-components">
               {nonBreadboardParts.map((part) => {
                 const pos = positions[part.id] ?? { left: 100, top: 100 };
                 const symDef = getSchematicSymbolDef(part);
-                const isDragging = draggingPartId === part.id;
 
                 return (
                   <g
                     key={part.id}
-                    className={`schematic-part-node${isDragging ? ' dragging' : ''}`}
+                    className="schematic-part-node"
                     transform={`translate(${pos.left}, ${pos.top})`}
-                    onPointerDown={(e) => handlePartPointerDown(e, part.id)}
-                    onPointerMove={handlePartPointerMove}
-                    onPointerUp={handlePartPointerUp}
-                    onPointerCancel={handlePartPointerUp}
-                    style={{ cursor: 'grab' }}
                   >
-                    {/* Transparent drag hit boundary */}
-                    <rect
-                      x="-10"
-                      y="-10"
-                      width={symDef.width + 20}
-                      height={symDef.height + 20}
-                      fill="transparent"
-                    />
                     {symDef.render(part)}
                   </g>
                 );

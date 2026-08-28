@@ -9,9 +9,7 @@ const fail = (message) => failures.push(message);
 
 for (const required of [
   'AGENTS.md',
-  'docs/architecture/overview.md',
-  'docs/guides/adding-components.md',
-  'docs/guides/agent-workbench.md',
+  'docs/GUIDE.md',
   'src/components/partTypes.ts',
   'src/components/parts.ts',
   'src/components/registerElements.ts',

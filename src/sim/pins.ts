@@ -60,6 +60,9 @@ export function isPositivePowerPin(partType: string, pinName: string): boolean {
 
 export function classifyArduinoPowerPin(pinName: string): 'gnd' | '5v' | '3v3' | 'vin' | null {
   const result = classifyPowerPin('wokwi-arduino-uno', pinName);
-  return result === '9v' ? null : result;
+  if (result === 'gnd' || result === '5v' || result === '3v3' || result === 'vin') {
+    return result;
+  }
+  return null;
 }
 

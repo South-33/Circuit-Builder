@@ -1,7 +1,7 @@
 import { getPartPins, PART_ORDER, resolvePinName } from '../components/parts';
 import { buildAgentLayout, canvasPointToGrid, gridPartPlacement, gridPointToCanvas } from './layout';
-import { WORKSPACE_HEIGHT, WORKSPACE_WIDTH } from '../layout/placement';
 import { diagnoseCircuit } from '../sim/diagnostics';
+import { buildCircuitGraph, directlyConnectedNodes } from '../sim/circuitGraph';
 import { simulator } from '../sim/simulator';
 import { circuitStore } from '../circuit/store';
 import { endpointPoint } from '../wires/geometry';
@@ -79,23 +79,89 @@ function canonicalEndpoint(endpoint: unknown) {
   return `${partId}:${pin}`;
 }
 
-function inspectCircuit(includePins = false, includeLayout = true, pinPartIds: string[] = [], includeCode = false) {
+function parseConnections(raw: unknown[]) {
+  return raw.map((entry, index) => {
+    if (!entry || typeof entry !== 'object') throw new Error(`connections[${index}] must be an object.`);
+    const value = entry as Record<string, unknown>;
+    const id = typeof value.id === 'string' && value.id.trim() ? value.id.trim() : undefined;
+    const from = value.from !== undefined ? canonicalEndpoint(value.from) : undefined;
+    const to = value.to !== undefined ? canonicalEndpoint(value.to) : undefined;
+    if (!id && (!from || !to)) throw new Error('Connection requires both from and to endpoints when id is omitted.');
+    if (from && to && from === to) throw new Error(`connections[${index}] connects a pin to itself.`);
+    if (Array.isArray(value.waypoints) && Array.isArray(value.gridWaypoints)) {
+      throw new Error(`connections[${index}] cannot specify both waypoints and gridWaypoints.`);
+    }
+    if (Array.isArray(value.gridWaypoints)) {
+      validateOrthogonalGridWaypoints(value.gridWaypoints as Array<Record<string, unknown>>, index);
+    }
+    const rawWaypoints = Array.isArray(value.gridWaypoints)
+      ? value.gridWaypoints.map((point, pointIndex) => {
+          if (!point || typeof point !== 'object') throw new Error(`connections[${index}].gridWaypoints[${pointIndex}] must be a point.`);
+          const rawPoint = point as Record<string, unknown>;
+          if (typeof rawPoint.x !== 'number' || typeof rawPoint.y !== 'number') {
+            throw new Error(`connections[${index}].gridWaypoints[${pointIndex}] requires numeric x and y.`);
+          }
+          return gridPointToCanvas({ x: rawPoint.x, y: rawPoint.y });
+        })
+      : value.waypoints;
+    const waypoints = Array.isArray(rawWaypoints)
+      ? rawWaypoints.map((point, pointIndex) => {
+          if (!point || typeof point !== 'object') throw new Error(`connections[${index}].waypoints[${pointIndex}] must be a point.`);
+          const rawPoint = point as Record<string, unknown>;
+          if (typeof rawPoint.x !== 'number' || typeof rawPoint.y !== 'number') {
+            throw new Error(`connections[${index}].waypoints[${pointIndex}] requires numeric x and y.`);
+          }
+          return { x: rawPoint.x, y: rawPoint.y } satisfies WirePoint;
+        })
+      : undefined;
+    return {
+      ...(id ? { id } : {}),
+      ...(from ? { from } : {}),
+      ...(to ? { to } : {}),
+      ...(typeof value.color === 'string'
+        ? { color: value.color }
+        : from && to
+          ? { color: defaultWireColor(from, to, typeof value.role === 'string' ? value.role : undefined) }
+          : {}),
+      ...(waypoints !== undefined ? { waypoints } : {}),
+    };
+  });
+}
+
+function inspectCircuit(
+  includePins = false,
+  includeLayout = true,
+  pinPartIds: string[] = [],
+  includeCode = false,
+  netOf?: string,
+  filterPartIds?: string[],
+) {
   const state = circuitStore.getSnapshot();
   const pinFilter = new Set(pinPartIds);
+  const partFilter = filterPartIds?.length ? new Set(filterPartIds) : null;
+  const parts = partFilter ? state.parts.filter((p) => partFilter.has(p.id)) : state.parts;
+  const connections = partFilter
+    ? state.connections.filter((c) => {
+        const fromPart = c.from.split(':')[0];
+        const toPart = c.to.split(':')[0];
+        return partFilter.has(fromPart) || partFilter.has(toPart);
+      })
+    : state.connections;
+
+  let netTrace: string[] | undefined;
+  if (netOf) {
+    const canonical = canonicalEndpoint(netOf);
+    const graph = buildCircuitGraph(state);
+    netTrace = Array.from(directlyConnectedNodes(graph, canonical));
+  }
+
   return {
-    canvas: {
-      units: 'pixels',
-      origin: 'top-left',
-      usefulWorkingArea: { width: WORKSPACE_WIDTH, height: WORKSPACE_HEIGHT },
-    },
-    supportedPartTypes: partTypeEnum,
-    parts: state.parts.map((part) => ({
+    parts: parts.map((part) => ({
       id: part.id,
       type: part.type,
-      left: part.left,
-      top: part.top,
-      rotate: part.rotate ?? 0,
-      attrs: part.attrs,
+      grid: canvasPointToGrid({ x: part.left, y: part.top }),
+      ...(part.rotate ? { rotate: part.rotate } : {}),
+      ...(part.attrs && Object.keys(part.attrs).length ? { attrs: part.attrs } : {}),
       ...(part.seating ? { seating: part.seating } : {}),
       ...(includeCode && part.code !== undefined ? { code: part.code } : {}),
       ...(includePins && (!pinFilter.size || pinFilter.has(part.id)) ? {
@@ -103,16 +169,25 @@ function inspectCircuit(includePins = false, includeLayout = true, pinPartIds: s
           const location = endpointPoint(`${part.id}:${pin.name}`, state.parts);
           return {
             name: pin.name,
-            description: pin.description,
-            signals: pin.signals,
             ...(location ? { grid: canvasPointToGrid(location) } : {}),
           };
         }),
       } : {}),
     })),
-    connections: state.connections,
+    connections: connections.map((connection) => ({
+      id: connection.id,
+      from: connection.from,
+      to: connection.to,
+      color: connection.color,
+      ...(connection.waypoints?.length ? { gridWaypoints: connection.waypoints.map(canvasPointToGrid) } : {}),
+    })),
+    ...(netTrace ? { net: { root: netOf, connectedNodes: netTrace } } : {}),
     diagnostics: diagnoseCircuit(state),
-    simulation: state.simulation,
+    simulation: {
+      status: state.simulation.status,
+      ...(state.simulation.error ? { error: state.simulation.error } : {}),
+      ...(state.simulation.serialOutput ? { serialOutput: state.simulation.serialOutput } : {}),
+    },
     ...(includeLayout ? { layout: buildAgentLayout(state) } : {}),
   };
 }
@@ -129,12 +204,14 @@ export async function registerWebMCPTools() {
   const tools: ToolDefinition[] = [
     {
       name: 'inspect-circuit',
-      description: 'Read the live circuit workspace as structured parts, authored wire routes, code, diagnostics, simulation state, and a compact 2D planning grid. Pins are omitted by default to keep responses small; request them only for the parts you are about to wire.',
+      description: 'Read the live circuit workspace as structured parts, authored wire routes, code, diagnostics, simulation state, and a compact 2D planning grid. You can also trace an entire electrical net using netOf.',
       inputSchema: {
         type: 'object',
         properties: {
+          partIds: { type: 'array', items: { type: 'string' }, description: 'Limit inspection to these specific part IDs.' },
+          netOf: { type: 'string', description: 'Trace and return all electrically connected nodes on the net connected to partId:pinName (e.g. uno1:5V).' },
           includePins: { type: 'boolean', description: 'Include semantic pin lists. Defaults to false.' },
-          pinPartIds: { type: 'array', items: { type: 'string' }, description: 'When includePins=true, limit pin lists to these part IDs. Omit only when you truly need every pin.' },
+          pinPartIds: { type: 'array', items: { type: 'string' }, description: 'When includePins=true, limit pin lists to these part IDs.' },
           includeCode: { type: 'boolean', description: 'Include complete Arduino source. Defaults to false.' },
           includeLayout: { type: 'boolean', description: 'Include the compact agent planning grid and mechanical layout quality report. Defaults to true.' },
         },
@@ -144,12 +221,16 @@ export async function registerWebMCPTools() {
         const pinPartIds = Array.isArray(input.pinPartIds)
           ? input.pinPartIds.map((value) => requireString(value, 'pinPartId'))
           : [];
-        return result(inspectCircuit(input.includePins === true, input.includeLayout !== false, pinPartIds, input.includeCode === true));
+        const partIds = Array.isArray(input.partIds)
+          ? input.partIds.map((value) => requireString(value, 'partId'))
+          : undefined;
+        const netOf = typeof input.netOf === 'string' && input.netOf.trim() ? input.netOf.trim() : undefined;
+        return result(inspectCircuit(input.includePins === true, input.includeLayout !== false, pinPartIds, input.includeCode === true, netOf, partIds));
       },
     },
     {
       name: 'edit-circuit',
-      description: 'Place, move, update, or remove circuit parts in one batch. This directly updates the visible workspace. Use replace=true with a parts array to lay out a whole new project in one call.',
+      description: 'Place, move, nudge, rotate, update, or remove circuit parts and wires in one batch. Supports relative nudging (dx/dy), relative rotation (+30, +45, +90), attribute tweaking, breadboard seating, and whole-circuit atomic assembly.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -161,15 +242,22 @@ export async function registerWebMCPTools() {
               properties: {
                 id: { type: 'string', description: 'Stable part ID. Omit to auto-generate.' },
                 type: { type: 'string', enum: partTypeEnum },
-                left: { type: 'number', description: 'X position in canvas pixels. Prefer grid for agent-authored layouts.' },
-                top: { type: 'number', description: 'Y position in canvas pixels. Prefer grid for agent-authored layouts.' },
+                left: { type: 'number', description: 'X position in canvas pixels.' },
+                top: { type: 'number', description: 'Y position in canvas pixels.' },
                 grid: {
                   type: 'object',
-                  description: 'Preferred agent placement coordinate on the compact planning grid. Converted deterministically to canvas pixels.',
+                  description: 'Preferred agent placement coordinate on the compact planning grid.',
                   properties: { x: { type: 'number' }, y: { type: 'number' } },
                   required: ['x', 'y'],
                 },
-                rotate: { type: 'number' },
+                nudge: {
+                  type: 'object',
+                  description: 'Relative position nudge in planning grid units (+1 right, -1 left, +1 down, -1 up).',
+                  properties: { dx: { type: 'number' }, dy: { type: 'number' } },
+                  required: ['dx', 'dy'],
+                },
+                rotate: { type: 'number', description: 'Absolute rotation angle in degrees (0, 30, 45, 90, 180, etc.).' },
+                rotateBy: { type: 'number', description: 'Relative rotation delta in degrees (e.g. +30, -45, +90).' },
                 attrs: { type: 'object', description: 'Part properties such as LED color or resistor value.' },
                 seating: {
                   type: 'object',
@@ -196,6 +284,30 @@ export async function registerWebMCPTools() {
             },
           },
           removePartIds: { type: 'array', items: { type: 'string' } },
+          connections: {
+            type: 'array',
+            description: 'Optional wires to create atomically alongside parts in one single round trip.',
+            items: {
+              type: 'object',
+              properties: {
+                id: { type: 'string' },
+                from: { type: 'string' },
+                to: { type: 'string' },
+                color: { type: 'string' },
+                role: { type: 'string', enum: ['signal', 'power', 'ground'] },
+                gridWaypoints: {
+                  type: 'array',
+                  items: {
+                    type: 'object',
+                    properties: { x: { type: 'number' }, y: { type: 'number' } },
+                    required: ['x', 'y'],
+                  },
+                },
+              },
+            },
+          },
+          removeConnectionIds: { type: 'array', items: { type: 'string' } },
+          code: { type: 'string', description: 'Optional Arduino sketch to assign to the primary Arduino Uno in the workspace.' },
         },
       },
       async execute(input) {
@@ -211,6 +323,9 @@ export async function registerWebMCPTools() {
           const gridPlacement = grid && typeof grid.x === 'number' && typeof grid.y === 'number'
             ? gridPartPlacement({ x: grid.x, y: grid.y })
             : null;
+          const nudge = value.nudge && typeof value.nudge === 'object'
+            ? { dx: Number((value.nudge as Record<string, unknown>).dx || 0), dy: Number((value.nudge as Record<string, unknown>).dy || 0) }
+            : undefined;
           if (value.seating && value.seat) throw new Error(`parts[${index}] cannot specify both seating and seat.`);
           const seat = value.seat && typeof value.seat === 'object' ? value.seat as Record<string, unknown> : null;
           return {
@@ -219,7 +334,9 @@ export async function registerWebMCPTools() {
             ...(gridPlacement ? { left: gridPlacement.left, top: gridPlacement.top } : {}),
             ...(!gridPlacement && typeof value.left === 'number' ? { left: value.left } : {}),
             ...(!gridPlacement && typeof value.top === 'number' ? { top: value.top } : {}),
+            ...(nudge ? { nudge } : {}),
             ...(typeof value.rotate === 'number' ? { rotate: value.rotate } : {}),
+            ...(typeof value.rotateBy === 'number' ? { rotateBy: value.rotateBy } : {}),
             ...(value.attrs && typeof value.attrs === 'object' ? { attrs: value.attrs as PartAttrs } : {}),
             ...(value.seating && typeof value.seating === 'object'
               ? { seating: value.seating as { breadboardId: string; pins: Record<string, string> } }
@@ -238,12 +355,33 @@ export async function registerWebMCPTools() {
           ? input.removePartIds.map((value) => requireString(value, 'removePartId'))
           : [];
         const changed = circuitStore.applyParts(parts, removePartIds, input.replace === true);
-        return result({ changed: changed.map((part) => part.id), circuit: inspectCircuit(false, true) });
+
+        let changedWires: string[] = [];
+        if (Array.isArray(input.connections) || Array.isArray(input.removeConnectionIds)) {
+          const rawConnections = Array.isArray(input.connections) ? input.connections : [];
+          const connections = parseConnections(rawConnections);
+          const removeIds = Array.isArray(input.removeConnectionIds)
+            ? input.removeConnectionIds.map((value) => requireString(value, 'removeConnectionId'))
+            : [];
+          const wires = circuitStore.applyConnections(connections, removeIds);
+          changedWires = wires.map((w) => w.id);
+        }
+
+        if (typeof input.code === 'string') {
+          const uno = circuitStore.getSnapshot().parts.find((p) => p.type === 'wokwi-arduino-uno');
+          if (uno) circuitStore.setCode(uno.id, input.code);
+        }
+
+        return result({
+          changed: changed.map((part) => part.id),
+          ...(changedWires.length ? { changedWires } : {}),
+          circuit: inspectCircuit(false, true),
+        });
       },
     },
     {
       name: 'connect-pins',
-      description: 'Create or remove many semantic wires in one call. Endpoints use partId:pinName. You own the route: inspect the 2D grid, then provide gridWaypoints that draw the wire like plumbing. The workbench preserves your interior path and only snaps the final lead-ins to exact physical pins. Prefer long straight runs, few 90-degree bends, separate parallel lanes, and no overlap through components.',
+      description: 'Create, update route, rewire, or remove wires. Endpoints use partId:pinName. Passing an existing wire id allows in-place rerouting or re-coloring. Preserves authored interior path and snaps lead-ins to exact pins.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -252,6 +390,7 @@ export async function registerWebMCPTools() {
             items: {
               type: 'object',
               properties: {
+                id: { type: 'string', description: 'Wire ID to update in-place, or omit to create new wire.' },
                 from: { type: 'string' },
                 to: { type: 'string' },
                 color: { type: 'string', description: 'Explicit wire color. If omitted, role/endpoints choose a stable semantic default.' },
@@ -275,7 +414,6 @@ export async function registerWebMCPTools() {
                   },
                 },
               },
-              required: ['from', 'to'],
             },
           },
           removeConnectionIds: { type: 'array', items: { type: 'string' } },
@@ -283,47 +421,7 @@ export async function registerWebMCPTools() {
       },
       async execute(input) {
         const raw = Array.isArray(input.connections) ? input.connections : [];
-        const connections = raw.map((entry, index) => {
-          if (!entry || typeof entry !== 'object') throw new Error(`connections[${index}] must be an object.`);
-          const value = entry as Record<string, unknown>;
-          const from = canonicalEndpoint(value.from);
-          const to = canonicalEndpoint(value.to);
-          if (from === to) throw new Error(`connections[${index}] connects a pin to itself.`);
-          if (Array.isArray(value.waypoints) && Array.isArray(value.gridWaypoints)) {
-            throw new Error(`connections[${index}] cannot specify both waypoints and gridWaypoints.`);
-          }
-          if (Array.isArray(value.gridWaypoints)) {
-            validateOrthogonalGridWaypoints(value.gridWaypoints as Array<Record<string, unknown>>, index);
-          }
-          const rawWaypoints = Array.isArray(value.gridWaypoints)
-            ? value.gridWaypoints.map((point, pointIndex) => {
-                if (!point || typeof point !== 'object') throw new Error(`connections[${index}].gridWaypoints[${pointIndex}] must be a point.`);
-                const rawPoint = point as Record<string, unknown>;
-                if (typeof rawPoint.x !== 'number' || typeof rawPoint.y !== 'number') {
-                  throw new Error(`connections[${index}].gridWaypoints[${pointIndex}] requires numeric x and y.`);
-                }
-                return gridPointToCanvas({ x: rawPoint.x, y: rawPoint.y });
-              })
-            : value.waypoints;
-          const waypoints = Array.isArray(rawWaypoints)
-            ? rawWaypoints.map((point, pointIndex) => {
-                if (!point || typeof point !== 'object') throw new Error(`connections[${index}].waypoints[${pointIndex}] must be a point.`);
-                const rawPoint = point as Record<string, unknown>;
-                if (typeof rawPoint.x !== 'number' || typeof rawPoint.y !== 'number') {
-                  throw new Error(`connections[${index}].waypoints[${pointIndex}] requires numeric x and y.`);
-                }
-                return { x: rawPoint.x, y: rawPoint.y } satisfies WirePoint;
-              })
-            : undefined;
-          return {
-            from,
-            to,
-            color: typeof value.color === 'string'
-              ? value.color
-              : defaultWireColor(from, to, typeof value.role === 'string' ? value.role : undefined),
-            ...(waypoints !== undefined ? { waypoints } : {}),
-          };
-        });
+        const connections = parseConnections(raw);
         const removeIds = Array.isArray(input.removeConnectionIds)
           ? input.removeConnectionIds.map((value) => requireString(value, 'removeConnectionId'))
           : [];

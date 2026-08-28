@@ -21,12 +21,12 @@ import { diagnoseCircuit } from '../sim/diagnostics';
 import { simulator } from '../sim/simulator';
 import { circuitStore } from '../circuit/store';
 import type { SnapMode } from '../breadboard/placement';
-import { getBreadboardGeometry, isBreadboardType } from '../breadboard/geometry';
+import { findNearestBreadboardPin, getBreadboardGeometry, isBreadboardType } from '../breadboard/geometry';
 import { endpointPoint, partRect, pinExitDirection } from '../wires/geometry';
 import { connectionPolyline, nearestPointOnPolyline, roundedPath, snapPoint, type WireAxis } from '../wires/path';
 import type { CircuitConnection, CircuitPart, PartType, WirePoint } from '../circuit/types';
 import { highlightArduinoCode } from './highlight';
-import { ComponentsView } from './ComponentsView';
+import { ComponentsView, exportComponentsCsv } from './ComponentsView';
 import { SchematicView } from './SchematicView';
 import { NotesLayer, type CanvasNote } from './Notes';
 import { BlocksWorkspace } from './BlocksWorkspace';
@@ -211,9 +211,8 @@ function PartElement({ part }: { part: CircuitPart }) {
         alt=""
         draggable={false}
         style={{
-          width: definition.naturalSize.width,
-          height: definition.naturalSize.height,
-          transform: `rotate(${part.rotate ?? 0}deg) scale(${definition.renderScale})`,
+          width: definition.naturalSize.width * definition.renderScale,
+          height: definition.naturalSize.height * definition.renderScale,
         }}
       />
     );
@@ -226,9 +225,8 @@ function PartElement({ part }: { part: CircuitPart }) {
         data-part-element={part.id}
         data-motor-direction="stopped"
         style={{
-          width: definition.naturalSize.width,
-          height: definition.naturalSize.height,
-          transform: `rotate(${part.rotate ?? 0}deg) scale(${definition.renderScale})`,
+          width: definition.naturalSize.width * definition.renderScale,
+          height: definition.naturalSize.height * definition.renderScale,
         }}
       >
         <img src="/assets/fritzing/dc-motor.svg" alt="" draggable={false} />
@@ -246,9 +244,8 @@ function PartElement({ part }: { part: CircuitPart }) {
         alt=""
         draggable={false}
         style={{
-          width: definition.naturalSize.width,
-          height: definition.naturalSize.height,
-          transform: `rotate(${part.rotate ?? 0}deg) scale(${definition.renderScale})`,
+          width: definition.naturalSize.width * definition.renderScale,
+          height: definition.naturalSize.height * definition.renderScale,
         }}
       />
     );
@@ -261,7 +258,7 @@ function PartElement({ part }: { part: CircuitPart }) {
     'data-part-element': part.id,
     style: {
       transformOrigin: '0 0',
-      transform: `rotate(${part.rotate ?? 0}deg) scale(${definition.renderScale})`,
+      transform: `scale(${definition.renderScale})`,
     },
   });
 }
@@ -305,23 +302,28 @@ function PartPreview({ type }: { type: PartType }) {
   );
 }
 
-function PartOnCanvas({
+const PartOnCanvas = React.memo(function PartOnCanvas({
   part,
   selected,
   focused,
   pendingWire,
   simulationRunning,
   onPinClick,
+  zoom = 1,
 }: {
   part: CircuitPart;
   selected: boolean;
   focused: boolean;
   pendingWire: string | null;
   simulationRunning: boolean;
-  onPinClick: (part: CircuitPart, pin: string) => void;
+  onPinClick: (part: CircuitPart, pinName: string) => void;
+  zoom?: number;
 }) {
+  const isBreadboard = isBreadboardType(part.type);
   const definition = PART_DEFINITIONS[part.type];
-  const bounds = getPartBounds(part);
+  const bounds = useMemo(() => getPartBounds(part), [part.type]);
+  const [hoverBreadboardPin, setHoverBreadboardPin] = useState<{ name: string; px: number; py: number; endpoint: string } | null>(null);
+
   const dragRef = useRef<{
     pointerId: number;
     startX: number;
@@ -334,9 +336,24 @@ function PartOnCanvas({
     frame: number | null;
   } | null>(null);
 
+  // Non-breadboard parts use normal pin buttons (2 to 30 pins total)
+  const pinButtons = useMemo(() => {
+    if (isBreadboard) return [];
+    const scale = definition.renderScale;
+    return getPartPins(part).map((pin) => ({
+      name: pin.name,
+      px: pin.x * scale,
+      py: pin.y * scale,
+      endpoint: `${part.id}:${pin.name}`,
+    }));
+  }, [part.type, part.id, definition.renderScale, isBreadboard]);
+
   const handlePointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
-    if (simulationRunning) return;
-    if ((event.target as HTMLElement).closest('.pin-hit')) return;
+    if (simulationRunning || event.button !== 0) return;
+    if (isBreadboard && hoverBreadboardPin) {
+      return;
+    }
+    event.stopPropagation();
     circuitStore.select(part.id);
     dragRef.current = {
       pointerId: event.pointerId,
@@ -354,20 +371,50 @@ function PartOnCanvas({
 
   const handlePointerMove = (event: React.PointerEvent<HTMLDivElement>) => {
     const drag = dragRef.current;
-    if (!drag || drag.pointerId !== event.pointerId) return;
-    const left = Math.max(0, Math.min(WORKSPACE_WIDTH - 30, drag.left + event.clientX - drag.startX));
-    const top = Math.max(0, Math.min(WORKSPACE_HEIGHT - 30, drag.top + event.clientY - drag.startY));
-    const snapMode: SnapMode = event.shiftKey ? 'off' : (event.altKey || event.ctrlKey ? 'fine' : 'normal');
-    drag.latestLeft = left;
-    drag.latestTop = top;
-    drag.latestSnapMode = snapMode;
-    if (drag.frame === null) {
-      drag.frame = requestAnimationFrame(() => {
-        const current = dragRef.current;
-        if (!current) return;
-        current.frame = null;
-        circuitStore.movePart(part.id, current.latestLeft, current.latestTop, false, current.latestSnapMode);
-      });
+    if (drag && drag.pointerId === event.pointerId) {
+      const left = Math.max(0, Math.min(WORKSPACE_WIDTH - 30, drag.left + (event.clientX - drag.startX) / zoom));
+      const top = Math.max(0, Math.min(WORKSPACE_HEIGHT - 30, drag.top + (event.clientY - drag.startY) / zoom));
+      const snapMode: SnapMode = event.shiftKey ? 'off' : (event.altKey || event.ctrlKey ? 'fine' : 'normal');
+      drag.latestLeft = left;
+      drag.latestTop = top;
+      drag.latestSnapMode = snapMode;
+      if (drag.frame === null) {
+        drag.frame = requestAnimationFrame(() => {
+          const current = dragRef.current;
+          if (!current) return;
+          current.frame = null;
+          circuitStore.movePart(part.id, current.latestLeft, current.latestTop, false, current.latestSnapMode);
+        });
+      }
+      return;
+    }
+
+    if (isBreadboard) {
+      const rect = event.currentTarget.getBoundingClientRect();
+      const centerX = rect.left + rect.width / 2;
+      const centerY = rect.top + rect.height / 2;
+      const dx = (event.clientX - centerX) / zoom;
+      const dy = (event.clientY - centerY) / zoom;
+      const deg = -(part.rotate ?? 0);
+      const rad = (deg * Math.PI) / 180;
+      const cos = Math.cos(rad);
+      const sin = Math.sin(rad);
+      const unrotDx = dx * cos - dy * sin;
+      const unrotDy = dx * sin + dy * cos;
+      const lx = bounds.width / 2 + unrotDx;
+      const ly = bounds.height / 2 + unrotDy;
+
+      const pin = findNearestBreadboardPin(lx, ly, part.type as 'breadboard' | 'breadboard-half', 16);
+      if (pin) {
+        setHoverBreadboardPin({
+          name: pin.name,
+          px: pin.x,
+          py: pin.y,
+          endpoint: `${part.id}:${pin.name}`,
+        });
+      } else if (hoverBreadboardPin) {
+        setHoverBreadboardPin(null);
+      }
     }
   };
 
@@ -379,50 +426,80 @@ function PartOnCanvas({
     circuitStore.movePart(part.id, drag.latestLeft, drag.latestTop, true, drag.latestSnapMode);
   };
 
+  const handlePointerLeave = () => {
+    if (isBreadboard && hoverBreadboardPin) setHoverBreadboardPin(null);
+  };
+
   return (
     <div
-      className={`canvas-part${selected ? ' selected' : ''}${focused ? ' focused' : ''}${isBreadboardType(part.type) ? ' is-breadboard' : ''}`}
+      className={`canvas-part${selected ? ' selected' : ''}${focused ? ' focused' : ''}${isBreadboard ? ' is-breadboard' : ''}`}
       data-part-id={part.id}
-      style={{ left: part.left, top: part.top, width: bounds.width, height: bounds.height }}
+      style={{
+        left: part.left,
+        top: part.top,
+        width: bounds.width,
+        height: bounds.height,
+        transform: part.rotate ? `rotate(${part.rotate}deg)` : undefined,
+        transformOrigin: '50% 50%',
+      }}
       onPointerDown={handlePointerDown}
       onPointerMove={handlePointerMove}
       onPointerUp={handlePointerUp}
+      onPointerLeave={handlePointerLeave}
       onDoubleClick={() => circuitStore.select(part.id)}
     >
       <div className="part-render"><PartElement part={part} /></div>
       <div className="part-pins">
-        {getPartPins(part).map((pin) => {
-          const scale = definition.renderScale;
-          const x = pin.x * scale;
-          const y = pin.y * scale;
-          const radians = ((part.rotate ?? 0) * Math.PI) / 180;
-          const px = x * Math.cos(radians) - y * Math.sin(radians);
-          const py = x * Math.sin(radians) + y * Math.cos(radians);
-          const endpoint = `${part.id}:${pin.name}`;
-          return (
-            <button
-              type="button"
-              key={pin.name}
-              className={`pin-hit${pendingWire === endpoint ? ' pending' : ''}`}
-              style={{ left: px, top: py }}
-              data-label={pin.name}
-              aria-label={`${part.id} pin ${pin.name}`}
-              onPointerDown={(event) => event.stopPropagation()}
-              onClick={(event) => {
-                event.stopPropagation();
-                onPinClick(part, pin.name);
-              }}
-            />
-          );
-        })}
+        {pinButtons.map((pin) => (
+          <button
+            type="button"
+            key={pin.name}
+            className={`pin-hit${pendingWire === pin.endpoint ? ' pending' : ''}`}
+            style={{ left: pin.px, top: pin.py }}
+            data-label={pin.name}
+            aria-label={`${part.id} pin ${pin.name}`}
+            onPointerDown={(event) => event.stopPropagation()}
+            onClick={(event) => {
+              event.stopPropagation();
+              onPinClick(part, pin.name);
+            }}
+          />
+        ))}
+        {isBreadboard && hoverBreadboardPin && (
+          <button
+            type="button"
+            key={hoverBreadboardPin.name}
+            className={`pin-hit hover${pendingWire === hoverBreadboardPin.endpoint ? ' pending' : ''}`}
+            style={{ left: hoverBreadboardPin.px, top: hoverBreadboardPin.py }}
+            data-label={hoverBreadboardPin.name}
+            aria-label={`${part.id} pin ${hoverBreadboardPin.name}`}
+            onPointerDown={(event) => {
+              event.stopPropagation();
+              onPinClick(part, hoverBreadboardPin.name);
+            }}
+          />
+        )}
       </div>
     </div>
   );
-}
+});
 
 function svgEventPoint(event: { clientX: number; clientY: number }, svg: SVGSVGElement): WirePoint {
+  const ctm = svg.getScreenCTM();
+  if (ctm) {
+    const inverse = ctm.inverse();
+    const pt = svg.createSVGPoint();
+    pt.x = event.clientX;
+    pt.y = event.clientY;
+    const world = pt.matrixTransform(inverse);
+    return { x: world.x, y: world.y };
+  }
   const rect = svg.getBoundingClientRect();
-  return { x: event.clientX - rect.left, y: event.clientY - rect.top };
+  const zoom = (rect.width / WORKSPACE_WIDTH) || 1;
+  return {
+    x: (event.clientX - rect.left) / zoom,
+    y: (event.clientY - rect.top) / zoom,
+  };
 }
 
 function WireWaypointHandle({
@@ -556,16 +633,64 @@ function Wires({
   );
 }
 
+function SidePanelHeader({
+  activeTab,
+  onTabChange,
+  onToggleCollapse,
+}: {
+  activeTab: 'components' | 'code';
+  onTabChange?: (tab: 'components' | 'code') => void;
+  onToggleCollapse?: () => void;
+}) {
+  return (
+    <div className="panel-heading">
+      <div className="side-panel-switch">
+        <button
+          type="button"
+          className={`side-switch-btn${activeTab === 'components' ? ' active' : ''}`}
+          onClick={() => onTabChange?.('components')}
+          aria-label="Components"
+        >
+          <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>
+          <span>Components</span>
+        </button>
+        <button
+          type="button"
+          className={`side-switch-btn${activeTab === 'code' ? ' active' : ''}`}
+          onClick={() => onTabChange?.('code')}
+          aria-label="Code"
+        >
+          <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
+          <span>Code</span>
+        </button>
+      </div>
+      {onToggleCollapse && (
+        <button
+          type="button"
+          className="panel-toggle-close"
+          onClick={onToggleCollapse}
+          title="Collapse sidebar"
+          aria-label="Collapse sidebar"
+        >
+          ›
+        </button>
+      )}
+    </div>
+  );
+}
+
 function ComponentTray({
   onAdd,
   width,
   onResizeStart,
   onToggleCollapse,
+  onTabChange,
 }: {
   onAdd: (type: PartType) => void;
   width?: number;
   onResizeStart?: (e: React.PointerEvent) => void;
   onToggleCollapse?: () => void;
+  onTabChange?: (tab: 'components' | 'code') => void;
 }) {
   const [search, setSearch] = useState('');
   const [category, setCategory] = useState<'All' | PartCategory>('All');
@@ -583,17 +708,11 @@ function ComponentTray({
   return (
     <aside className="side-panel components-panel" style={{ width: width ? `${width}px` : undefined }}>
       {onResizeStart && <div className="panel-resize-handle" onPointerDown={onResizeStart} title="Drag to resize panel" />}
-      <div className="panel-heading">
-        <div className="heading-left">
-          <span>Components</span>
-          <span className="panel-count">{filtered.length}</span>
-        </div>
-        {onToggleCollapse && (
-          <button type="button" className="panel-toggle-close" onClick={onToggleCollapse} title="Collapse sidebar" aria-label="Collapse sidebar">
-            ›
-          </button>
-        )}
-      </div>
+      <SidePanelHeader
+        activeTab="components"
+        onTabChange={onTabChange}
+        onToggleCollapse={onToggleCollapse}
+      />
       <div className="category-dropdown-wrap">
         <button
           type="button"
@@ -658,6 +777,8 @@ function CodePanel({
   width,
   onResizeStart,
   onToggleCollapse,
+  onTabChange,
+  onAddPart,
 }: {
   board: CircuitPart | undefined;
   draft: string;
@@ -665,6 +786,8 @@ function CodePanel({
   width?: number;
   onResizeStart?: (e: React.PointerEvent) => void;
   onToggleCollapse?: () => void;
+  onTabChange?: (tab: 'components' | 'code') => void;
+  onAddPart?: (type: PartType) => void;
 }) {
   const state = useCircuit();
   const [scrollTop, setScrollTop] = useState(0);
@@ -726,17 +849,22 @@ function CodePanel({
     return (
       <aside className="side-panel code-panel empty-code-panel" style={{ width: width ? `${width}px` : undefined }}>
         {onResizeStart && <div className="panel-resize-handle" onPointerDown={onResizeStart} title="Drag to resize panel" />}
-        <div className="panel-heading">
-          <div className="heading-left">
-            <span>Code</span>
+        <SidePanelHeader
+          activeTab="code"
+          onTabChange={onTabChange}
+          onToggleCollapse={onToggleCollapse}
+        />
+        <div className="code-panel-top">
+          <div className="code-topbar-right">
+            <div className="code-device-dropdown disabled">
+              <span>None</span>
+              <svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" strokeWidth="2.2"><polyline points="6 9 12 15 18 9"/></svg>
+            </div>
           </div>
-          {onToggleCollapse && (
-            <button type="button" className="panel-toggle-close" onClick={onToggleCollapse} title="Collapse sidebar" aria-label="Collapse sidebar">
-              ›
-            </button>
-          )}
         </div>
-        <p>Add an Arduino Uno to edit a sketch.</p>
+        <div className="code-empty-message">
+          No programmable components in this circuit
+        </div>
       </aside>
     );
   }
@@ -744,6 +872,11 @@ function CodePanel({
   return (
     <aside className="side-panel code-panel" style={{ width: width ? `${width}px` : undefined }}>
       {onResizeStart && <div className="panel-resize-handle" onPointerDown={onResizeStart} title="Drag to resize panel" />}
+      <SidePanelHeader
+        activeTab="code"
+        onTabChange={onTabChange}
+        onToggleCollapse={onToggleCollapse}
+      />
       <div className="code-panel-top">
         <div className="code-topbar-left">
           {/* Mode Dropdown (Blocks / Blocks + Text / Text) */}
@@ -973,28 +1106,103 @@ function PartPropertyControl({ part, property }: { part: CircuitPart; property: 
   );
 }
 
-function SelectionBar({ selectedId }: { selectedId: string | null }) {
+function InspectorCard({ selectedId }: { selectedId: string | null }) {
   const state = useCircuit();
   if (!selectedId) return null;
   const part = state.parts.find((candidate) => candidate.id === selectedId);
   const wire = state.connections.find((candidate) => candidate.id === selectedId);
   if (!part && !wire) return null;
 
-  const remove = () => {
-    if (part) circuitStore.removePart(part.id);
-    else if (wire) circuitStore.removeConnection(wire.id);
-  };
+  const definition = part ? PART_DEFINITIONS[part.type] : null;
 
   return (
-    <div className="selection-bar" onPointerDown={(event) => event.stopPropagation()}>
-      <div className="selection-name">
-        <strong>{part ? PART_DEFINITIONS[part.type].name : 'Wire'}</strong>
-        <span>{selectedId}</span>
+    <div className="inspector-card" onPointerDown={(event) => event.stopPropagation()}>
+      <div className="inspector-header">
+        <span className="inspector-title">{part ? definition?.name : 'Wire'}</span>
+        <button type="button" className="inspector-help-btn" title="Component Help">?</button>
       </div>
-      {part && (PART_DEFINITIONS[part.type].properties ?? []).map((property) => (
-        <PartPropertyControl key={property.key} part={part} property={property} />
-      ))}
-      <button type="button" className="delete-button" onClick={remove}>Delete</button>
+      <div className="inspector-body">
+        {part && (
+          <div className="inspector-row">
+            <span className="inspector-badge">Name</span>
+            <input
+              type="text"
+              className="inspector-input"
+              value={part.id}
+              readOnly
+            />
+          </div>
+        )}
+        {part && definition && definition.properties?.map((property) => {
+          const current = part.attrs[property.key] ?? definition.defaults[property.key];
+          const update = (value: string | number | boolean) =>
+            circuitStore.setPartAttrs(part.id, { [property.key]: value });
+
+          if (property.kind === 'select') {
+            return (
+              <div key={property.key} className="inspector-row">
+                <span className="inspector-badge">{property.label}</span>
+                <select
+                  className="inspector-select"
+                  value={String(current ?? '')}
+                  onChange={(e) => {
+                    const option = property.options?.find((opt) => String(opt.value) === e.target.value);
+                    update(option?.value ?? e.target.value);
+                  }}
+                >
+                  {(property.options ?? []).map((opt) => (
+                    <option key={String(opt.value)} value={String(opt.value)}>{opt.label}</option>
+                  ))}
+                </select>
+              </div>
+            );
+          }
+
+          if (property.kind === 'toggle') {
+            return (
+              <div key={property.key} className="inspector-row">
+                <span className="inspector-badge">{property.label}</span>
+                <label className="inspector-toggle">
+                  <input
+                    type="checkbox"
+                    checked={Boolean(current)}
+                    onChange={(e) => update(e.target.checked)}
+                  />
+                  <span className="toggle-slider" />
+                </label>
+              </div>
+            );
+          }
+
+          return (
+            <div key={property.key} className="inspector-row">
+              <span className="inspector-badge">{property.label}</span>
+              <input
+                type="text"
+                className="inspector-input number-input"
+                value={String(current ?? '')}
+                onChange={(e) => {
+                  const val = Number(e.target.value);
+                  if (Number.isFinite(val)) update(val);
+                  else if (e.target.value === '') update(0);
+                }}
+              />
+              {property.unit && (
+                <span className="inspector-unit">{property.unit}</span>
+              )}
+            </div>
+          );
+        })}
+        {wire && (
+          <div className="inspector-row">
+            <span className="inspector-badge">Color</span>
+            <div className="inspector-input" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+              <span style={{ display: 'inline-block', width: 14, height: 14, borderRadius: '50%', background: wire.color, border: '1px solid rgba(0,0,0,0.15)' }} />
+              <span style={{ fontSize: 12, color: '#333' }}>{wire.color}</span>
+            </div>
+          </div>
+        )}
+      </div>
     </div>
   );
 }
@@ -1108,7 +1316,10 @@ export default function App() {
   const state = useCircuit();
   const canvasRef = useRef<HTMLDivElement | null>(null);
   const [viewMode, setViewMode] = useState<ViewMode>('circuits');
-  const [codeOpen, setCodeOpen] = useState(false);
+  const [sidePanelTab, setSidePanelTab] = useState<'components' | 'code'>('components');
+  const [canvasZoom, setCanvasZoom] = useState(1);
+  const [canvasPan, setCanvasPan] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
+  const [schematicZoom, setSchematicZoom] = useState(1);
   const [examplesOpen, setExamplesOpen] = useState(false);
   const [bomOpen, setBomOpen] = useState(false);
   const [wireDraft, setWireDraft] = useState<WireDraft | null>(null);
@@ -1119,7 +1330,7 @@ export default function App() {
   const [notesVisible, setNotesVisible] = useState(true);
   const [panelWidth, setPanelWidth] = useState(380);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
-  const panRef = useRef<{ pointerId: number; startX: number; startY: number; scrollLeft: number; scrollTop: number } | null>(null);
+  const panRef = useRef<{ pointerId: number; startX: number; startY: number; startPanX: number; startPanY: number } | null>(null);
   const [activeWireColor, setActiveWireColor] = useState(() => {
     try { return localStorage.getItem(WIRE_COLOR_STORAGE_KEY) || DEFAULT_WIRE_COLOR; } catch { return DEFAULT_WIRE_COLOR; }
   });
@@ -1143,8 +1354,15 @@ export default function App() {
 
   const addNote = useCallback(() => {
     const canvas = canvasRef.current;
-    const noteX = canvas ? canvas.scrollLeft + canvas.clientWidth / 2 - 100 : 350;
-    const noteY = canvas ? canvas.scrollTop + canvas.clientHeight / 2 - 60 : 220;
+    let noteX = WORKSPACE_WIDTH / 2 - 100;
+    let noteY = WORKSPACE_HEIGHT / 2 - 60;
+    if (canvas) {
+      const rect = canvas.getBoundingClientRect();
+      const screenCenterX = rect.width / 2;
+      const screenCenterY = rect.height / 2;
+      noteX = (screenCenterX - canvasPan.x) / canvasZoom - 100;
+      noteY = (screenCenterY - canvasPan.y) / canvasZoom - 60;
+    }
     const newNote: CanvasNote = {
       id: `note_${Date.now()}`,
       x: Math.round(noteX / 10) * 10,
@@ -1154,7 +1372,7 @@ export default function App() {
     };
     setNotes((prev) => [...prev, newNote]);
     setNotesVisible(true);
-  }, []);
+  }, [canvasPan, canvasZoom]);
 
   const updateNote = useCallback((id: string, partial: Partial<CanvasNote>) => {
     setNotes((prev) => prev.map((n) => n.id === id ? { ...n, ...partial } : n));
@@ -1187,35 +1405,124 @@ export default function App() {
 
   useEffect(() => {
     if (state.focus?.code) {
-      setCodeOpen(true);
+      setSidePanelTab('code');
       setSidebarCollapsed(false);
     }
   }, [state.focus?.code]);
 
-  const savedScrollRef = useRef<{ scrollLeft: number; scrollTop: number } | null>(null);
+  const cameraRef = useRef({ pan: canvasPan, zoom: canvasZoom });
+  useEffect(() => {
+    cameraRef.current = { pan: canvasPan, zoom: canvasZoom };
+  }, [canvasPan, canvasZoom]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
-    if (savedScrollRef.current) {
-      canvas.scrollLeft = savedScrollRef.current.scrollLeft;
-      canvas.scrollTop = savedScrollRef.current.scrollTop;
-      return;
+    const rect = canvas.getBoundingClientRect();
+    const w = rect.width || canvas.clientWidth;
+    const h = rect.height || canvas.clientHeight;
+    if (w > 0 && h > 0) {
+      const initialPan = {
+        x: Math.round(w / 2 - (WORKSPACE_WIDTH / 2) * canvasZoom),
+        y: Math.round(h / 2 - (WORKSPACE_HEIGHT / 2) * canvasZoom),
+      };
+      setCanvasPan(initialPan);
+      cameraRef.current = { pan: initialPan, zoom: canvasZoom };
     }
-    if (circuitStore.getSnapshot().parts.length) return;
-    canvas.scrollLeft = WORKSPACE_WIDTH / 2 - canvas.clientWidth / 2;
-    canvas.scrollTop = WORKSPACE_HEIGHT / 2 - canvas.clientHeight / 2;
-    savedScrollRef.current = {
-      scrollLeft: canvas.scrollLeft,
-      scrollTop: canvas.scrollTop,
+  }, [viewMode]);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+
+    const handleNativeWheel = (event: WheelEvent) => {
+      event.preventDefault();
+      event.stopPropagation();
+      const rect = canvas.getBoundingClientRect();
+      const screenX = event.clientX - rect.left;
+      const screenY = event.clientY - rect.top;
+      const { pan, zoom } = cameraRef.current;
+
+      if (event.ctrlKey || event.metaKey) {
+        // Touchpad pinch-to-zoom or Ctrl + mouse wheel
+        const worldX = (screenX - pan.x) / zoom;
+        const worldY = (screenY - pan.y) / zoom;
+
+        // Smooth continuous exponential zoom for touchpad pinch
+        const zoomDelta = -event.deltaY * 0.006;
+        const factor = Math.exp(Math.max(-0.25, Math.min(0.25, zoomDelta)));
+        const nextZoom = Math.max(0.25, Math.min(3.5, zoom * factor));
+
+        const nextPan = {
+          x: screenX - worldX * nextZoom,
+          y: screenY - worldY * nextZoom,
+        };
+
+        setCanvasZoom(nextZoom);
+        setCanvasPan(nextPan);
+        cameraRef.current = { pan: nextPan, zoom: nextZoom };
+        return;
+      }
+
+      // Two-finger trackpad swipe or mouse wheel pan
+      const nextPan = {
+        x: pan.x - event.deltaX,
+        y: pan.y - event.deltaY,
+      };
+      setCanvasPan(nextPan);
+      cameraRef.current = { pan: nextPan, zoom };
+    };
+
+    const handleGesture = (event: Event) => {
+      event.preventDefault();
+    };
+
+    canvas.addEventListener('wheel', handleNativeWheel, { passive: false });
+    canvas.addEventListener('gesturestart', handleGesture, { passive: false });
+    canvas.addEventListener('gesturechange', handleGesture, { passive: false });
+    canvas.addEventListener('gestureend', handleGesture, { passive: false });
+
+    return () => {
+      canvas.removeEventListener('wheel', handleNativeWheel);
+      canvas.removeEventListener('gesturestart', handleGesture);
+      canvas.removeEventListener('gesturechange', handleGesture);
+      canvas.removeEventListener('gestureend', handleGesture);
     };
   }, [viewMode]);
+
+  useEffect(() => {
+    const handleGlobalWheel = (event: WheelEvent) => {
+      if (event.ctrlKey || event.metaKey) {
+        event.preventDefault();
+      }
+    };
+    window.addEventListener('wheel', handleGlobalWheel, { passive: false });
+    return () => window.removeEventListener('wheel', handleGlobalWheel);
+  }, []);
 
   useEffect(() => {
     const handleKey = (event: KeyboardEvent) => {
       const target = event.target as HTMLElement;
       if (target.matches('textarea,input,select')) return;
-      if (event.shiftKey && event.key.toLowerCase() === 'n') {
+      if ((event.ctrlKey || event.metaKey) && (event.key === '=' || event.key === '+' || event.key === '-' || event.key === '_')) {
+        event.preventDefault();
+        const factor = (event.key === '=' || event.key === '+') ? 1.15 : 0.85;
+        if (viewMode === 'schematic') {
+          setSchematicZoom((prev) => Math.max(0.4, Math.min(3.0, prev * factor)));
+        } else {
+          const canvas = canvasRef.current;
+          const screenX = canvas ? canvas.clientWidth / 2 : 400;
+          const screenY = canvas ? canvas.clientHeight / 2 : 300;
+          const worldX = (screenX - canvasPan.x) / canvasZoom;
+          const worldY = (screenY - canvasPan.y) / canvasZoom;
+          const nextZoom = Math.max(0.25, Math.min(3.5, canvasZoom * factor));
+          setCanvasZoom(nextZoom);
+          setCanvasPan({
+            x: screenX - worldX * nextZoom,
+            y: screenY - worldY * nextZoom,
+          });
+        }
+      } else if (event.shiftKey && event.key.toLowerCase() === 'n') {
         event.preventDefault();
         setNotesVisible((v) => !v);
       } else if (event.key >= '0' && event.key <= '9') {
@@ -1223,8 +1530,10 @@ export default function App() {
         if (option) chooseWireColor(option.color);
       } else if (event.key.toLowerCase() === 'r' && state.selectedId) {
         const part = state.parts.find((candidate) => candidate.id === state.selectedId);
-        if (part && !isBreadboardType(part.type)) {
-          circuitStore.rotatePart(part.id, ((part.rotate ?? 0) + 90) % 360);
+        if (part) {
+          const step = event.shiftKey ? -30 : 30;
+          const nextDeg = (((part.rotate ?? 0) + step) % 360 + 360) % 360;
+          circuitStore.rotatePart(part.id, nextDeg);
         }
       } else if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'z') {
         event.preventDefault();
@@ -1244,17 +1553,45 @@ export default function App() {
     };
     window.addEventListener('keydown', handleKey);
     return () => window.removeEventListener('keydown', handleKey);
-  }, [state.selectedId, state.parts, chooseWireColor]);
+  }, [state.selectedId, state.parts, chooseWireColor, canvasPan, canvasZoom, viewMode]);
 
   const addPart = useCallback((type: PartType) => {
-    const snap = circuitStore.getSnapshot();
-    const existing = snap.parts.filter((candidate) => candidate.type === type).length;
+    const canvas = canvasRef.current;
     const def = PART_DEFINITIONS[type];
-    const id = `${def.idPrefix}${existing + 1}`;
-    const left = Math.round((WORKSPACE_WIDTH - def.naturalSize.width) / 20) * 10;
-    const top = Math.round((WORKSPACE_HEIGHT - def.naturalSize.height) / 20) * 10;
-    circuitStore.addPart(type, { left, top, id });
-  }, []);
+    let centerX = WORKSPACE_WIDTH / 2;
+    let centerY = WORKSPACE_HEIGHT / 2;
+
+    if (canvas) {
+      const rect = canvas.getBoundingClientRect();
+      const screenCenterX = rect.width / 2;
+      const screenCenterY = rect.height / 2;
+      centerX = (screenCenterX - canvasPan.x) / canvasZoom;
+      centerY = (screenCenterY - canvasPan.y) / canvasZoom;
+    }
+
+    let targetLeft = Math.round((centerX - def.naturalSize.width / 2) / 10) * 10;
+    let targetTop = Math.round((centerY - def.naturalSize.height / 2) / 10) * 10;
+
+    // Prevent direct overlapping if another part is already at targetLeft, targetTop
+    const snap = circuitStore.getSnapshot();
+    let collision = true;
+    let offset = 0;
+    while (collision && offset <= 160) {
+      const testLeft = targetLeft + offset;
+      const testTop = targetTop + offset;
+      collision = snap.parts.some((p) => {
+        return Math.abs(p.left - testLeft) < 25 && Math.abs(p.top - testTop) < 25;
+      });
+      if (collision) {
+        offset += 25;
+      } else {
+        targetLeft = testLeft;
+        targetTop = testTop;
+      }
+    }
+
+    circuitStore.addPart(type, targetLeft, targetTop);
+  }, [canvasPan, canvasZoom]);
 
   const handlePinClick = useCallback((part: CircuitPart, pin: string) => {
     if (state.simulation.status !== 'stopped' && state.simulation.status !== 'error') return;
@@ -1277,27 +1614,32 @@ export default function App() {
     setWirePointer(null);
   }, [wireDraft, activeWireColor, state.parts, state.simulation.status]);
 
-  const canvasPoint = useCallback((event: { clientX: number; clientY: number }) => {
+  const canvasPoint = useCallback((event: { clientX: number; clientY: number }): WirePoint | null => {
     const canvas = canvasRef.current;
     if (!canvas) return null;
     const rect = canvas.getBoundingClientRect();
+    const screenX = event.clientX - rect.left;
+    const screenY = event.clientY - rect.top;
     return {
-      x: canvas.scrollLeft + event.clientX - rect.left,
-      y: canvas.scrollTop + event.clientY - rect.top,
+      x: (screenX - canvasPan.x) / canvasZoom,
+      y: (screenY - canvasPan.y) / canvasZoom,
     };
-  }, []);
+  }, [canvasPan, canvasZoom]);
 
   const frameCircuit = useCallback(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
+    const rect = canvas.getBoundingClientRect();
+    const viewportWidth = rect.width || canvas.clientWidth || 800;
+    const viewportHeight = rect.height || canvas.clientHeight || 600;
     const live = circuitStore.getSnapshot();
     const points: WirePoint[] = [];
 
     for (const part of live.parts) {
-      const rect = partRect(part);
+      const r = partRect(part);
       points.push(
-        { x: rect.x, y: rect.y },
-        { x: rect.x + rect.width, y: rect.y + rect.height },
+        { x: r.x, y: r.y },
+        { x: r.x + r.width, y: r.y + r.height },
       );
     }
     for (const wire of live.connections) {
@@ -1309,20 +1651,32 @@ export default function App() {
     }
 
     if (!points.length) {
-      canvas.scrollTo({ left: WORKSPACE_WIDTH / 2 - canvas.clientWidth / 2, top: WORKSPACE_HEIGHT / 2 - canvas.clientHeight / 2, behavior: 'smooth' });
+      setCanvasZoom(1);
+      setCanvasPan({
+        x: Math.round(viewportWidth / 2 - (WORKSPACE_WIDTH / 2)),
+        y: Math.round(viewportHeight / 2 - (WORKSPACE_HEIGHT / 2)),
+      });
       return;
     }
 
-    const minX = Math.min(...points.map((point) => point.x));
-    const maxX = Math.max(...points.map((point) => point.x));
-    const minY = Math.min(...points.map((point) => point.y));
-    const maxY = Math.max(...points.map((point) => point.y));
+    const minX = Math.min(...points.map((p) => p.x));
+    const maxX = Math.max(...points.map((p) => p.x));
+    const minY = Math.min(...points.map((p) => p.y));
+    const maxY = Math.max(...points.map((p) => p.y));
+    const contentWidth = Math.max(120, maxX - minX);
+    const contentHeight = Math.max(120, maxY - minY);
     const centerX = (minX + maxX) / 2;
     const centerY = (minY + maxY) / 2;
-    canvas.scrollTo({
-      left: Math.max(0, Math.min(WORKSPACE_WIDTH - canvas.clientWidth, centerX - canvas.clientWidth / 2)),
-      top: Math.max(0, Math.min(WORKSPACE_HEIGHT - canvas.clientHeight, centerY - canvas.clientHeight / 2)),
-      behavior: 'smooth',
+
+    const padding = 120;
+    const fitZoomX = (viewportWidth - padding * 2) / contentWidth;
+    const fitZoomY = (viewportHeight - padding * 2) / contentHeight;
+    const targetZoom = Math.max(0.35, Math.min(1.5, Math.min(fitZoomX, fitZoomY)));
+
+    setCanvasZoom(targetZoom);
+    setCanvasPan({
+      x: Math.round(viewportWidth / 2 - centerX * targetZoom),
+      y: Math.round(viewportHeight / 2 - centerY * targetZoom),
     });
   }, []);
 
@@ -1349,7 +1703,7 @@ export default function App() {
       if (!preset) return;
       circuitStore.replaceDocument(centerCircuitDocument(preset.parts, preset.connections));
     }
-    setCodeOpen(false);
+    setSidePanelTab('components');
     setWireDraft(null);
     setWirePointer(null);
     setExamplesOpen(false);
@@ -1364,11 +1718,12 @@ export default function App() {
             type="button"
             className="icon-button"
             onClick={() => {
-              if (selectedPart && !isBreadboardType(selectedPart.type)) {
-                circuitStore.rotatePart(selectedPart.id, ((selectedPart.rotate ?? 0) + 90) % 360);
+              if (selectedPart) {
+                const nextDeg = (((selectedPart.rotate ?? 0) + 30) % 360 + 360) % 360;
+                circuitStore.rotatePart(selectedPart.id, nextDeg);
               }
             }}
-            disabled={!selectedPart || isBreadboardType(selectedPart.type)}
+            disabled={!selectedPart}
             title="Rotate selected part (R)"
             aria-label="Rotate"
           >
@@ -1432,24 +1787,41 @@ export default function App() {
         </div>
         <div className="toolbar-group toolbar-right">
           {viewMode === 'circuits' && (
-            <>
-              <button type="button" className={`code-button${codeOpen ? ' active' : ''}`} onClick={() => setCodeOpen(!codeOpen)}>
-                <span>{'</>'}</span> Code
-              </button>
-              <button
-                type="button"
-                className={`simulate-button ${state.simulation.status}`}
-                onClick={toggleSimulation}
-                disabled={state.simulation.status === 'compiling'}
-              >
-                <span className="simulation-symbol" aria-hidden="true">{state.simulation.status === 'running' ? '■' : '▶'}</span>
-                {state.simulation.status === 'running'
-                  ? 'Stop Simulation'
-                  : state.simulation.status === 'compiling'
-                    ? 'Compiling...'
-                    : 'Start Simulation'}
-              </button>
-            </>
+            <button
+              type="button"
+              className={`simulate-button ${state.simulation.status}`}
+              onClick={toggleSimulation}
+              disabled={state.simulation.status === 'compiling'}
+            >
+              <span className="simulation-symbol" aria-hidden="true">{state.simulation.status === 'running' ? '■' : '▶'}</span>
+              {state.simulation.status === 'running'
+                ? 'Stop Simulation'
+                : state.simulation.status === 'compiling'
+                  ? 'Compiling...'
+                  : 'Start Simulation'}
+            </button>
+          )}
+          {viewMode === 'schematic' && (
+            <button
+              type="button"
+              className="pdf-download-btn"
+              onClick={() => window.print()}
+              title="Download PDF / Print"
+            >
+              <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" strokeWidth="2"><path d="M6 9V2h12v7"/><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><rect x="6" y="14" width="12" height="8"/></svg>
+              <span>Download PDF</span>
+            </button>
+          )}
+          {viewMode === 'components' && (
+            <button
+              type="button"
+              className="csv-download-btn"
+              onClick={() => exportComponentsCsv(state.parts)}
+              title="Download CSV"
+            >
+              <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+              <span>Download CSV</span>
+            </button>
           )}
           <div className="view-mode-switcher">
             <button
@@ -1484,7 +1856,12 @@ export default function App() {
       </header>
 
       {viewMode === 'schematic' && (
-        <SchematicView parts={state.parts} connections={state.connections} />
+        <SchematicView
+          parts={state.parts}
+          connections={state.connections}
+          zoom={schematicZoom}
+          onZoomChange={setSchematicZoom}
+        />
       )}
       {viewMode === 'components' && (
         <ComponentsView parts={state.parts} />
@@ -1493,19 +1870,8 @@ export default function App() {
         <div className="canvas-stage">
           <div
             ref={canvasRef}
-            className={`canvas-scroll${isPanning ? ' panning' : ''}`}
-            onScroll={(event) => {
-              savedScrollRef.current = {
-                scrollLeft: event.currentTarget.scrollLeft,
-                scrollTop: event.currentTarget.scrollTop,
-              };
-            }}
-              onWheel={(event) => {
-                event.preventDefault();
-                event.currentTarget.scrollLeft += event.deltaX;
-                event.currentTarget.scrollTop += event.deltaY;
-              }}
-              onPointerMove={(event) => {
+            className={`canvas-viewport${isPanning ? ' panning' : ''}`}
+            onPointerMove={(event) => {
               if (wireDraft) {
                 const point = canvasPoint(event);
                 if (point) setWirePointer(point);
@@ -1513,12 +1879,16 @@ export default function App() {
               }
               const pan = panRef.current;
               if (!pan || pan.pointerId !== event.pointerId) return;
-              event.currentTarget.scrollLeft = pan.scrollLeft - (event.clientX - pan.startX);
-              event.currentTarget.scrollTop = pan.scrollTop - (event.clientY - pan.startY);
+              const dx = event.clientX - pan.startX;
+              const dy = event.clientY - pan.startY;
+              setCanvasPan({
+                x: pan.startPanX + dx,
+                y: pan.startPanY + dy,
+              });
             }}
             onPointerDown={(event) => {
               const target = event.target as HTMLElement;
-              const onBackground = event.target === event.currentTarget || target.classList.contains('canvas-world');
+              const onBackground = target === event.currentTarget || target.classList.contains('canvas-world') || target.classList.contains('canvas-viewport');
               if (!onBackground) return;
               if (wireDraft) {
                 const point = canvasPoint(event);
@@ -1536,8 +1906,8 @@ export default function App() {
                 pointerId: event.pointerId,
                 startX: event.clientX,
                 startY: event.clientY,
-                scrollLeft: event.currentTarget.scrollLeft,
-                scrollTop: event.currentTarget.scrollTop,
+                startPanX: canvasPan.x,
+                startPanY: canvasPan.y,
               };
               setIsPanning(true);
               event.currentTarget.setPointerCapture(event.pointerId);
@@ -1549,7 +1919,16 @@ export default function App() {
             }}
             onPointerCancel={() => { panRef.current = null; setIsPanning(false); }}
           >
-            <div className="canvas-world" style={{ width: WORKSPACE_WIDTH, height: WORKSPACE_HEIGHT }}>
+            <div
+              className="canvas-world"
+              style={{
+                width: WORKSPACE_WIDTH,
+                height: WORKSPACE_HEIGHT,
+                transform: `translate(${canvasPan.x}px, ${canvasPan.y}px) scale(${canvasZoom})`,
+                transformOrigin: '0 0',
+                '--active-wire-color': shownWireColor,
+              } as React.CSSProperties}
+            >
             <Wires
               connections={state.connections}
               parts={state.parts}
@@ -1569,6 +1948,7 @@ export default function App() {
                 pendingWire={wireDraft?.from ?? null}
                 simulationRunning={state.simulation.status === 'running' || state.simulation.status === 'compiling'}
                 onPinClick={handlePinClick}
+                zoom={canvasZoom}
               />
             ))}
             {wireDraft && (
@@ -1582,7 +1962,12 @@ export default function App() {
               <button
                 type="button"
                 className="simulation-error"
-                onClick={() => state.focus?.code && setCodeOpen(true)}
+                onClick={() => {
+                  if (state.focus?.code) {
+                    setSidePanelTab('code');
+                    setSidebarCollapsed(false);
+                  }
+                }}
               >
                 {state.simulation.error}
               </button>
@@ -1599,7 +1984,7 @@ export default function App() {
           <div className="canvas-tools">
             <button type="button" className="frame-button" onClick={frameCircuit} title="Frame circuit" aria-label="Frame circuit"><FrameIcon /></button>
           </div>
-          <SelectionBar selectedId={state.selectedId} />
+          <InspectorCard selectedId={state.selectedId} />
           {sidebarCollapsed && (
             <button
               type="button"
@@ -1608,13 +1993,13 @@ export default function App() {
               title="Expand panel"
               aria-label="Expand panel"
             >
-              ‹ {codeOpen ? 'Code' : 'Components'}
+              ‹ {sidePanelTab === 'code' ? 'Code' : 'Components'}
             </button>
           )}
         </div>
 
         {!sidebarCollapsed && (
-          codeOpen
+          sidePanelTab === 'code'
             ? <CodePanel
                 board={board}
                 draft={draft}
@@ -1622,12 +2007,15 @@ export default function App() {
                 width={panelWidth}
                 onResizeStart={startResize}
                 onToggleCollapse={() => setSidebarCollapsed(true)}
+                onTabChange={setSidePanelTab}
+                onAddPart={addPart}
               />
             : <ComponentTray
                 onAdd={addPart}
                 width={panelWidth}
                 onResizeStart={startResize}
                 onToggleCollapse={() => setSidebarCollapsed(true)}
+                onTabChange={setSidePanelTab}
               />
         )}
       </main>

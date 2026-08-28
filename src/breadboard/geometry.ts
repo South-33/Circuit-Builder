@@ -94,3 +94,100 @@ export function getBreadboardGeometry(type: PartType) {
 export function breadboardPin(name: string, type: BreadboardType = 'breadboard') {
   return GEOMETRIES[type].pins.find((pin) => pin.name.toLowerCase() === name.trim().toLowerCase()) ?? null;
 }
+
+export function findNearestBreadboardPin(
+  lx: number,
+  ly: number,
+  type: BreadboardType = 'breadboard',
+  maxDistance = 16
+): PinInfo | null {
+  const geom = GEOMETRIES[type];
+  if (!geom) return null;
+
+  const unscaleY = ly / BREADBOARD_SCALE;
+  const unscaleX = lx / BREADBOARD_SCALE;
+  let bestPin: PinInfo | null = null;
+  let bestDistSq = maxDistance * maxDistance;
+
+  // 1. Check terminal rows A-E and F-J
+  const rowsUpper = ['A', 'B', 'C', 'D', 'E'];
+  const rowsLower = ['F', 'G', 'H', 'I', 'J'];
+  let targetRow: string | null = null;
+
+  if (unscaleY >= 32 && unscaleY <= 69) {
+    const rowIdx = Math.round((unscaleY - 36) / PITCH);
+    if (rowIdx >= 0 && rowIdx < rowsUpper.length) targetRow = rowsUpper[rowIdx];
+  } else if (unscaleY >= 82 && unscaleY <= 120) {
+    const rowIdx = Math.round((unscaleY - 86.4) / PITCH);
+    if (rowIdx >= 0 && rowIdx < rowsLower.length) targetRow = rowsLower[rowIdx];
+  }
+
+  const gridX0 = type === 'breadboard' ? 10.92 : 25.32;
+  if (targetRow) {
+    const col = 1 + Math.round((unscaleX - gridX0) / PITCH);
+    if (col >= 1 && col <= geom.columns) {
+      const pinName = `${targetRow}${col}`;
+      const pin = breadboardPin(pinName, type);
+      if (pin) {
+        const dx = lx - pin.x;
+        const dy = ly - pin.y;
+        const distSq = dx * dx + dy * dy;
+        if (distSq <= bestDistSq) return pin;
+      }
+    }
+  }
+
+  // 2. Power rails (+top, -top, -bottom, +bottom)
+  const railX0 = type === 'breadboard' ? 25.33 : 25.32;
+  if (unscaleY >= 3 && unscaleY <= 20) {
+    const isPlus = Math.abs(unscaleY - 14.4) < Math.abs(unscaleY - 7.2);
+    const approxIndex = Math.round((unscaleX - railX0) / (PITCH * 1.2));
+    for (let h = Math.max(1, approxIndex - 3); h <= Math.min(geom.railHoles, approxIndex + 4); h++) {
+      const pinName = `${isPlus ? '+' : '-'}top${h}`;
+      const pin = breadboardPin(pinName, type);
+      if (pin) {
+        const dx = lx - pin.x;
+        const dy = ly - pin.y;
+        const distSq = dx * dx + dy * dy;
+        if (distSq < bestDistSq) {
+          bestDistSq = distSq;
+          bestPin = pin;
+        }
+      }
+    }
+  } else if (unscaleY >= 130 && unscaleY <= 150) {
+    const isPlus = Math.abs(unscaleY - 144) < Math.abs(unscaleY - 136.8);
+    const approxIndex = Math.round((unscaleX - railX0) / (PITCH * 1.2));
+    for (let h = Math.max(1, approxIndex - 3); h <= Math.min(geom.railHoles, approxIndex + 4); h++) {
+      const pinName = `${isPlus ? '+' : '-'}bottom${h}`;
+      const pin = breadboardPin(pinName, type);
+      if (pin) {
+        const dx = lx - pin.x;
+        const dy = ly - pin.y;
+        const distSq = dx * dx + dy * dy;
+        if (distSq < bestDistSq) {
+          bestDistSq = distSq;
+          bestPin = pin;
+        }
+      }
+    }
+  }
+
+  return bestPin;
+}
+
+export function breadboardHoleNet(name: string): string | null {
+  const normalized = name.trim();
+  if (normalized.startsWith('+top')) return '+top';
+  if (normalized.startsWith('-top')) return '-top';
+  if (normalized.startsWith('+bottom')) return '+bottom';
+  if (normalized.startsWith('-bottom')) return '-bottom';
+
+  const match = /^([A-Ja-j])(\d+)$/.exec(normalized);
+  if (!match) return null;
+  const row = match[1].toUpperCase();
+  const col = match[2];
+  if (['A', 'B', 'C', 'D', 'E'].includes(row)) return `terminal-upper:${col}`;
+  if (['F', 'G', 'H', 'I', 'J'].includes(row)) return `terminal-lower:${col}`;
+  return null;
+}

@@ -168,7 +168,10 @@ globalThis.document.modelContext = {
 };
 await registerWebMCPTools();
 
-async function callWebMcp(name, input = {}) {
+export const webMcpToolRegistry = webMcpTools;
+export { circuitStore, evaluateLayout, diagnoseCircuit };
+
+export async function callWebMcp(name, input = {}) {
   const tool = webMcpTools.get(name);
   if (!tool) throw new Error(`WebMCP tool "${name}" is not registered`);
   const controller = new AbortController();
@@ -957,7 +960,7 @@ harness.test('F09: WebMCP registerWebMCPTools registers all 6 tools into modelCo
   }
 });
 
-harness.test('F09: WebMCP inspect-circuit returns canvas, 50 supported parts, layout, and pin filtering', async () => {
+harness.test('F09: WebMCP inspect-circuit returns lean parts, layout, and pin filtering', async () => {
   circuitStore.replaceDocument({
     parts: [
       { id: 'uno1', type: 'wokwi-arduino-uno', left: 100, top: 100, attrs: {}, code: 'void setup(){}' },
@@ -967,8 +970,6 @@ harness.test('F09: WebMCP inspect-circuit returns canvas, 50 supported parts, la
   });
 
   const basic = await callWebMcp('inspect-circuit');
-  assertEqual(basic.canvas.units, 'pixels');
-  assertEqual(basic.supportedPartTypes.length, 50);
   assertEqual(basic.parts.length, 2);
   assert(!basic.parts[0].pins, 'Pins should be omitted by default');
   assert(basic.layout, 'Layout should be included by default');
@@ -2684,6 +2685,77 @@ harness.test('T5: Adversarial - WebMCP 50-Step Autonomous Agent Workbench Sessio
   assertEqual(stop.status, 'stopped');
 });
 
+// 20. WebMCP Competition Benchmark: Full Image-to-Circuit 1-to-1 Autonomous Reconstruction
+harness.test('T5: WebMCP Benchmark - Autonomous Replicate Circuit from Reference Image in 4 Agent Calls', async () => {
+  // Step 1: Place all reference components using compact 2D grid and semantic hole seating
+  const editResult = await callWebMcp('edit-circuit', {
+    replace: true,
+    parts: [
+      { id: 'uno1', type: 'wokwi-arduino-uno', grid: { x: 2, y: 8 } },
+      { id: 'bb1', type: 'breadboard-half', grid: { x: 14, y: 8 } },
+      { id: 'bat1', type: 'battery-9v', grid: { x: 24, y: 1 } },
+      { id: 'motor1', type: 'dc-motor', grid: { x: 18, y: 20 } },
+      { id: 'remote1', type: 'wokwi-ir-remote', grid: { x: 29, y: 8 } },
+      { id: 't1', type: 'npn-transistor', seat: { breadboardId: 'bb1', pin: 'B', hole: 'E18' } },
+      { id: 'd1', type: 'rectifier-diode', seat: { breadboardId: 'bb1', pin: 'C', hole: 'C14' } },
+      { id: 'r_base', type: 'wokwi-resistor', seat: { breadboardId: 'bb1', pin: '1', hole: 'B10' }, attrs: { value: '1000' } },
+      { id: 'led1', type: 'wokwi-led', seat: { breadboardId: 'bb1', pin: 'A', hole: 'E5' } },
+      { id: 'r_led', type: 'wokwi-resistor', seat: { breadboardId: 'bb1', pin: '1', hole: 'A5' }, attrs: { value: '220' } },
+    ],
+  });
+  assert(editResult.changed.length >= 10, 'All 10 composite circuit parts must be placed');
+
+  // Step 2: Route all power, ground, and signal wires with orthogonal grid waypoints
+  const wireResult = await callWebMcp('connect-pins', {
+    connections: [
+      { from: 'uno1:5V', to: 'bb1:+bottom1', role: 'power', gridWaypoints: [{ x: 8, y: 18 }, { x: 14, y: 18 }] },
+      { from: 'uno1:GND.1', to: 'bb1:-bottom1', role: 'ground', gridWaypoints: [{ x: 8, y: 19 }, { x: 14, y: 19 }] },
+      { from: 'bat1:+', to: 'bb1:+top20', role: 'power', gridWaypoints: [{ x: 26, y: 6 }, { x: 21, y: 6 }] },
+      { from: 'bat1:-', to: 'bb1:-top20', role: 'ground', gridWaypoints: [{ x: 24, y: 6 }, { x: 20, y: 6 }] },
+      { from: 'bb1:-top25', to: 'bb1:-bottom25', role: 'ground', gridWaypoints: [{ x: 23, y: 7 }, { x: 23, y: 19 }] },
+      { from: 'uno1:3', to: 'bb1:E10', role: 'signal', gridWaypoints: [{ x: 8, y: 9 }, { x: 17, y: 9 }] },
+      { from: 'uno1:13', to: 'bb1:E5', role: 'signal', gridWaypoints: [{ x: 8, y: 8 }, { x: 15, y: 8 }] },
+      { from: 'motor1:1', to: 'bb1:B18', role: 'signal', gridWaypoints: [{ x: 19, y: 17 }, { x: 19, y: 14 }] },
+      { from: 'motor1:2', to: 'bb1:+top18', role: 'power', gridWaypoints: [{ x: 21, y: 17 }, { x: 22, y: 17 }, { x: 22, y: 6 }] },
+    ],
+  });
+  assert(wireResult.changed.length >= 9, 'All 9 wires must connect successfully');
+
+  // Step 3: Inspect circuit layout & diagnostics
+  const inspection = await callWebMcp('inspect-circuit', { includeLayout: true, includePins: true });
+  const blockingErrors = inspection.diagnostics.filter((d) => d.severity === 'error');
+  assertEqual(blockingErrors.length, 0, 'Circuit must have 0 blocking electrical errors');
+  if (inspection.layout.quality.score < 80) {
+    console.log('REMAINING ISSUES (score ' + inspection.layout.quality.score + '):', JSON.stringify(inspection.layout.quality.issues, null, 2));
+  }
+  assert(inspection.layout.quality.score >= 80, `Layout quality score must be >= 80, got ${inspection.layout.quality.score}`);
+
+  // Step 4: Set Arduino firmware sketch & run simulation
+  const sketch = `
+    const int motorPin = 3;
+    const int ledPin = 13;
+    void setup() {
+      pinMode(motorPin, OUTPUT);
+      pinMode(ledPin, OUTPUT);
+      analogWrite(motorPin, 180);
+      digitalWrite(ledPin, HIGH);
+    }
+    void loop() {
+      delay(100);
+    }
+  `;
+  const codeResult = await callWebMcp('set-code', { boardId: 'uno1', code: sketch });
+  assertEqual(codeResult.boardId, 'uno1');
+
+  // Step 5: Simulate
+  const simResult = await callWebMcp('simulate', { action: 'start' });
+  assertEqual(simResult.status, 'running');
+
+  // Step 6: Stop clean
+  const stopResult = await callWebMcp('simulate', { action: 'stop' });
+  assertEqual(stopResult.status, 'stopped');
+});
+
 // 20. Layout Overlap Quality Scoring Monotonicity
 harness.test('T5: Adversarial - Layout Overlap Quality Scoring Monotonicity', () => {
   const clean = {
@@ -2717,10 +2789,12 @@ harness.test('T5: Adversarial - Layout Overlap Quality Scoring Monotonicity', ()
   assert(scoreOverlapping >= scoreHeavily, 'Fewer overlaps must score >= heavier overlaps');
 });
 
-// Run all test suites
-const results = await harness.run();
-if (results.fail > 0) {
-  process.exit(1);
-} else {
-  process.exit(0);
+// Run all test suites if executed directly
+if (process.argv[1]?.endsWith('test-circuits.mjs')) {
+  const results = await harness.run();
+  if (results.fail > 0) {
+    process.exit(1);
+  } else {
+    process.exit(0);
+  }
 }

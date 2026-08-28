@@ -11,22 +11,30 @@ export function endpointParts(endpoint: string) {
   return { partId: endpoint.slice(0, colon), pinName: endpoint.slice(colon + 1) };
 }
 
-export function rotatePoint(point: WirePoint, degrees = 0): WirePoint {
+export function rotatePointAround(point: WirePoint, center: WirePoint, degrees = 0): WirePoint {
   if (!degrees) return point;
   const radians = (degrees * Math.PI) / 180;
   const cos = Math.cos(radians);
   const sin = Math.sin(radians);
+  const dx = point.x - center.x;
+  const dy = point.y - center.y;
   return {
-    x: point.x * cos - point.y * sin,
-    y: point.x * sin + point.y * cos,
+    x: center.x + (dx * cos - dy * sin),
+    y: center.y + (dx * sin + dy * cos),
   };
+}
+
+export function rotatePoint(point: WirePoint, degrees = 0): WirePoint {
+  return rotatePointAround(point, { x: 0, y: 0 }, degrees);
 }
 
 export function localPinPoint(part: CircuitPart, pinName: string): WirePoint | null {
   const pin = getPartPins(part).find((candidate) => candidate.name === pinName);
   if (!pin) return null;
   const scale = PART_DEFINITIONS[part.type].renderScale;
-  return rotatePoint({ x: pin.x * scale, y: pin.y * scale }, part.rotate ?? 0);
+  const bounds = getPartBounds(part);
+  const center = { x: bounds.width / 2, y: bounds.height / 2 };
+  return rotatePointAround({ x: pin.x * scale, y: pin.y * scale }, center, part.rotate ?? 0);
 }
 
 export function endpointPoint(endpoint: string, parts: CircuitPart[]): WirePoint | null {
@@ -40,12 +48,13 @@ export function endpointPoint(endpoint: string, parts: CircuitPart[]): WirePoint
 
 export function partRect(part: CircuitPart): Rect {
   const bounds = getPartBounds(part);
+  const center = { x: bounds.width / 2, y: bounds.height / 2 };
   const corners = [
     { x: 0, y: 0 },
     { x: bounds.width, y: 0 },
     { x: bounds.width, y: bounds.height },
     { x: 0, y: bounds.height },
-  ].map((point) => rotatePoint(point, part.rotate ?? 0));
+  ].map((point) => rotatePointAround(point, center, part.rotate ?? 0));
   const xs = corners.map((point) => point.x + part.left);
   const ys = corners.map((point) => point.y + part.top);
   const minX = Math.min(...xs);

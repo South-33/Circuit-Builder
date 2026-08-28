@@ -145,6 +145,13 @@ class CircuitStore {
     else this.setTransient({ parts, selectedId: id });
   }
 
+  rotatePart(id: string, rotate: number) {
+    const parts = this.state.parts.map((part) =>
+      part.id === id ? { ...part, rotate } : part,
+    );
+    this.commit(parts, this.state.connections, id);
+  }
+
   setPartAttrs(id: string, attrs: PartAttrs) {
     const parts = this.state.parts.map((part) =>
       part.id === id ? { ...part, attrs: { ...part.attrs, ...attrs } } : part,
@@ -158,7 +165,15 @@ class CircuitStore {
   }
 
   applyParts(
-    incoming: Array<Partial<Omit<CircuitPart, 'type'>> & { type: PartType; id?: string; seat?: BreadboardAnchor }>,
+    incoming: Array<
+      Partial<Omit<CircuitPart, 'type'>> & {
+        type: PartType;
+        id?: string;
+        seat?: BreadboardAnchor;
+        nudge?: { dx: number; dy: number };
+        rotateBy?: number;
+      }
+    >,
     removePartIds: string[] = [],
     replace = false,
   ) {
@@ -179,19 +194,25 @@ class CircuitStore {
       const id = candidate.id || nextNumericId(parts.map((part) => part.id), PART_DEFINITIONS[candidate.type].idPrefix);
       const code = candidate.code ?? existing?.code ?? (candidate.type === 'wokwi-arduino-uno' ? defaultCode() : undefined);
       const hasExplicitPosition = typeof candidate.left === 'number' || typeof candidate.top === 'number';
+      const nudgeX = candidate.nudge ? candidate.nudge.dx * 32 : 0;
+      const nudgeY = candidate.nudge ? candidate.nudge.dy * 32 : 0;
       const preferred = {
-        left: candidate.left ?? existing?.left ?? 260,
-        top: candidate.top ?? existing?.top ?? 170,
+        left: (candidate.left ?? existing?.left ?? 260) + nudgeX,
+        top: (candidate.top ?? existing?.top ?? 170) + nudgeY,
       };
-      const placement = existing || hasExplicitPosition
+      const placement = existing || hasExplicitPosition || candidate.nudge
         ? preferred
         : findOpenPlacement(candidate.type, parts, preferred);
+      const computedRotate = candidate.rotateBy !== undefined
+        ? (((existing?.rotate ?? candidate.rotate ?? 0) + candidate.rotateBy) % 360 + 360) % 360
+        : (candidate.rotate ?? existing?.rotate);
+
       let part: CircuitPart = {
         id,
         type: candidate.type,
         left: Math.round(placement.left),
         top: Math.round(placement.top),
-        rotate: candidate.rotate ?? existing?.rotate,
+        rotate: computedRotate,
         attrs: {
           ...PART_DEFINITIONS[candidate.type].defaults,
           ...(existing?.type === candidate.type ? existing.attrs : {}),
@@ -262,7 +283,7 @@ class CircuitStore {
   }
 
   applyConnections(
-    incoming: Array<Omit<CircuitConnection, 'id'> & { id?: string }>,
+    incoming: Array<Partial<CircuitConnection> & { id?: string; from?: string; to?: string }>,
     removeConnectionIds: string[] = [],
   ) {
     const removeSet = new Set(removeConnectionIds);
@@ -271,18 +292,23 @@ class CircuitStore {
 
     for (const candidate of incoming) {
       const exactIdIndex = candidate.id ? connections.findIndex((connection) => connection.id === candidate.id) : -1;
-      const duplicateIndex = connections.findIndex(
+      const duplicateIndex = (candidate.from && candidate.to) ? connections.findIndex(
         (connection) =>
           (connection.from === candidate.from && connection.to === candidate.to)
           || (connection.from === candidate.to && connection.to === candidate.from),
-      );
+      ) : -1;
       const existingIndex = exactIdIndex >= 0 ? exactIdIndex : duplicateIndex;
       const existing = existingIndex >= 0 ? connections[existingIndex] : undefined;
+
+      const from = candidate.from || existing?.from;
+      const to = candidate.to || existing?.to;
+      if (!from || !to) throw new Error('Connection requires both from and to endpoints.');
+
       const id = existing?.id || candidate.id || nextNumericId(connections.map((connection) => connection.id), 'wire');
       const connection: CircuitConnection = {
         id,
-        from: candidate.from,
-        to: candidate.to,
+        from,
+        to,
         color: candidate.color || existing?.color || '#24a35a',
         waypoints: [],
       };

@@ -1,4 +1,4 @@
-﻿import React, { useRef, useState } from 'react';
+import React, { useRef, useState } from 'react';
 
 export type CanvasNote = {
   id: string;
@@ -94,41 +94,43 @@ function NoteBubble({
     >
       {!note.collapsed && (
         <div className="note-card">
-          <div className="note-header">
-            <span className="note-drag-handle">⠿</span>
-            <button
-              type="button"
-              className="note-delete-btn"
-              onClick={(e) => { e.stopPropagation(); onDelete(); }}
-              title="Delete note"
-            >
-              ×
-            </button>
-          </div>
-          <textarea
-            className="note-textarea"
-            value={note.text}
-            placeholder="Write your note here."
-            onChange={(e) => onUpdate({ text: e.target.value })}
+          <div
+            className="note-editable"
+            contentEditable
+            suppressContentEditableWarning
+            data-placeholder="Write your note here."
+            onBlur={(e) => onUpdate({ text: e.currentTarget.innerText })}
+            onInput={(e) => onUpdate({ text: e.currentTarget.innerText })}
             onPointerDown={(e) => e.stopPropagation()}
-            rows={2}
-          />
+            tabIndex={0}
+          >
+            {note.text}
+          </div>
           <div className="note-tail" />
         </div>
       )}
 
-      {/* Anchor pin with collapse/expand button */}
+      {/* Anchor pin with exact mathematically centered +/- SVG (Double-click / double-tap to toggle) */}
       <button
         type="button"
         className="note-anchor-pin"
-        onClick={(e) => {
+        onDoubleClick={(e) => {
           e.stopPropagation();
           onUpdate({ collapsed: !note.collapsed });
         }}
-        title={note.collapsed ? 'Expand note' : 'Collapse note'}
-        aria-label={note.collapsed ? 'Expand note' : 'Collapse note'}
+        onPointerDown={(e) => {
+          e.stopPropagation();
+        }}
+        title={note.collapsed ? 'Double-click to open note' : 'Double-click to close note'}
+        aria-label={note.collapsed ? 'Double-click to open note' : 'Double-click to close note'}
       >
-        <span className="pin-icon">{note.collapsed ? '+' : '−'}</span>
+        <svg viewBox="0 0 20 20" width="20" height="20">
+          <circle cx="10" cy="10" r="9" fill="#ffffff" stroke="#1e293b" strokeWidth="1.5" />
+          <line x1="6" y1="10" x2="14" y2="10" stroke="#1e293b" strokeWidth="1.6" strokeLinecap="round" />
+          {note.collapsed && (
+            <line x1="10" y1="6" x2="10" y2="14" stroke="#1e293b" strokeWidth="1.6" strokeLinecap="round" />
+          )}
+        </svg>
       </button>
     </div>
   );

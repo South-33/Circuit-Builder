@@ -24,7 +24,7 @@ export type SchematicPowerMarker = {
   direction: 'up' | 'down';
 };
 
-// Auto-layout non-breadboard components in a clean, logical schematic flow
+// Precise Tinkercad-exact schematic placement
 export function computeSchematicInitialLayout(parts: CircuitPart[]): Record<string, { left: number; top: number }> {
   const nonBb = parts.filter((p) => !isBreadboardType(p.type));
   const positions: Record<string, { left: number; top: number }> = {};
@@ -35,44 +35,44 @@ export function computeSchematicInitialLayout(parts: CircuitPart[]): Record<stri
   const actuators = nonBb.filter((p) => p.type.includes('motor') || p.type.includes('led') || p.type.includes('buzzer') || p.type.includes('relay') || p.type.includes('servo'));
   const passives = nonBb.filter((p) => !displays.includes(p) && !sensors.includes(p) && !actuators.includes(p) && p !== unode);
 
-  // Position Uno in center-left
+  // Position Uno in center-left (x: 280, y: 320)
   if (unode) {
-    positions[unode.id] = { left: 320, top: 220 };
+    positions[unode.id] = { left: 280, top: 320 };
   }
 
   // Position Inputs / Sensors on the far left
   sensors.forEach((p, idx) => {
     positions[p.id] = {
-      left: 100,
-      top: 240 + idx * 130,
+      left: 120,
+      top: 380 + idx * 100,
     };
   });
 
   // Position Displays in center-right
   displays.forEach((p, idx) => {
     positions[p.id] = {
-      left: unode ? 640 : 400,
-      top: 240 + idx * 180,
+      left: unode ? 520 : 380,
+      top: 360 + idx * 160,
     };
+  });
+
+  // Position Series Resistors before LEDs/Actuators
+  passives.forEach((p, idx) => {
+    if (p.type === 'wokwi-resistor') {
+      positions[p.id] = { left: 740, top: 380 + idx * 80 };
+    } else if (p.type.includes('battery')) {
+      positions[p.id] = { left: 120, top: 160 + idx * 90 };
+    } else {
+      positions[p.id] = { left: 340 + idx * 120, top: 620 };
+    }
   });
 
   // Position Actuators / Outputs on the far right
   actuators.forEach((p, idx) => {
     positions[p.id] = {
-      left: 920,
-      top: 180 + idx * 130,
+      left: 880,
+      top: 360 + idx * 100,
     };
-  });
-
-  // Position Passives (Resistors, Diodes, Transistors, Batteries)
-  passives.forEach((p, idx) => {
-    if (p.type.includes('battery')) {
-      positions[p.id] = { left: 100, top: 80 + idx * 90 };
-    } else if (p.type === 'wokwi-resistor') {
-      positions[p.id] = { left: 820, top: 250 + idx * 90 };
-    } else {
-      positions[p.id] = { left: 340 + idx * 140, top: 560 };
-    }
   });
 
   return positions;
@@ -153,8 +153,6 @@ export function routeSchematicNets(
 
   const wires: SchematicNetWire[] = [];
   const powerMarkers: SchematicPowerMarker[] = [];
-
-  // Group parallel connections by source and target parts to assign parallel channel offsets
   const groupCounts: Record<string, number> = {};
 
   rawNetPairs.forEach((pair, idx) => {
@@ -178,8 +176,8 @@ export function routeSchematicNets(
     let points: Array<{ x: number; y: number }> = [];
 
     if (isVcc) {
-      // Route via top power rail (y = 60..100)
-      const railY = 80 + (pairIndexInGroup % 3) * 12;
+      // Route via top power rail (y = 280)
+      const railY = 280;
       points = [
         start,
         { x: start.x, y: railY },
@@ -187,8 +185,8 @@ export function routeSchematicNets(
         end,
       ];
     } else if (isGnd) {
-      // Route via bottom ground rail (y = 700..740)
-      const railY = 710 + (pairIndexInGroup % 3) * 12;
+      // Route via bottom ground rail (y = 620)
+      const railY = 620;
       points = [
         start,
         { x: start.x, y: railY },
@@ -196,9 +194,9 @@ export function routeSchematicNets(
         end,
       ];
     } else if (Math.abs(start.x - end.x) > 30) {
-      // Parallel bus channel staircase routing
+      // Parallel bus channel staircase routing with 10px spacing
       const midBaseX = Math.round((start.x + end.x) / 2);
-      const channelOffset = ((pairIndexInGroup % 8) - 3.5) * 12;
+      const channelOffset = ((pairIndexInGroup % 8) - 3.5) * 10;
       const midX = midBaseX + channelOffset;
 
       points = [
@@ -208,7 +206,6 @@ export function routeSchematicNets(
         end,
       ];
     } else {
-      // Vertical alignment
       const midY = Math.round((start.y + end.y) / 2);
       points = [
         start,
@@ -232,31 +229,27 @@ export function routeSchematicNets(
     });
   });
 
-  // Generate top and bottom power tags (U1_5V and U1_GND) if Uno has power nets
+  // Generate top and bottom power tags (U1_5V and U1_GND)
   const hasVccWire = wires.some((w) => w.isPower);
   const hasGndWire = wires.some((w) => w.isGround);
-  const unoPart = parts.find((p) => p.type === 'wokwi-arduino-uno');
 
-  if (unoPart) {
-    const unoPos = positions[unoPart.id] ?? { left: 320, top: 220 };
-    if (hasVccWire) {
-      powerMarkers.push({
-        id: 'pwr_5v',
-        x: unoPos.left + 220,
-        y: 80,
-        label: 'U1_5V',
-        direction: 'up',
-      });
-    }
-    if (hasGndWire) {
-      powerMarkers.push({
-        id: 'pwr_gnd',
-        x: unoPos.left + 220,
-        y: 710,
-        label: 'U1_GND',
-        direction: 'down',
-      });
-    }
+  if (hasVccWire) {
+    powerMarkers.push({
+      id: 'pwr_5v',
+      x: 540,
+      y: 280,
+      label: 'U1_5V',
+      direction: 'up',
+    });
+  }
+  if (hasGndWire) {
+    powerMarkers.push({
+      id: 'pwr_gnd',
+      x: 540,
+      y: 620,
+      label: 'U1_GND',
+      direction: 'down',
+    });
   }
 
   return { wires, powerMarkers };

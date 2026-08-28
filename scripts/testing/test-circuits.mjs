@@ -149,7 +149,7 @@ const { diagnoseCircuit } = await import('../../src/sim/diagnostics.ts');
 const { getBreadboardGeometry, isBreadboardType, BREADBOARD_WIDTH, BREADBOARD_HEIGHT, BREADBOARD_HOLE_PITCH } = await import('../../src/breadboard/geometry.ts');
 const { seatPartAtHole, snapPartPlacement, alignExplicitSeating } = await import('../../src/breadboard/placement.ts');
 const { buildAgentLayout, gridCenterPlacement, gridPartPlacement, gridPointToCanvas, canvasPointToGrid, evaluateLayout, partCenterGrid } = await import('../../src/agent/core/layout.ts');
-const { connectionPolyline, isOrthogonalPair } = await import('../../src/wires/path.ts');
+const { connectionPolyline, isOrthogonalPair, moveOrthogonalWaypoint } = await import('../../src/wires/path.ts');
 const { endpointPoint, localPinPoint, pinExitDirection } = await import('../../src/wires/geometry.ts');
 const { collectWireAlignmentTargets, snapOrthogonalPoint, snapPointToTargets } = await import('../../src/layout/alignment.ts');
 const { CIRCUIT_PRESETS } = await import('../../src/circuit/presets.ts');
@@ -1053,6 +1053,21 @@ harness.test('F09: Wire drafting locks each new segment to the previous pin or b
   const vertical = snapOrthogonalPoint({ x: 111.4, y: 309.7 }, anchor, { xs: [], ys: [] }, 6);
   assertEqual(vertical.point.x, anchor.x);
   assert(isOrthogonalPair(anchor, vertical.point), 'Vertical draft segment must be orthogonal');
+});
+
+harness.test('F09: Dragging an existing bend preserves orthogonal neighboring runs', () => {
+  const start = { x: 0, y: 0 };
+  const end = { x: 200, y: 200 };
+  const waypoints = [
+    { x: 100, y: 0 },
+    { x: 100, y: 200 },
+  ];
+  const moved = moveOrthogonalWaypoint(start, waypoints, end, 0, { x: 140, y: 70 });
+  const points = connectionPolyline(start, moved, end);
+  assert(points.slice(0, -1).every((point, index) => isOrthogonalPair(point, points[index + 1])), 'Bend drag must never create diagonal wire segments');
+  assertEqual(moved[0].y, 0, 'A bend directly attached to a fixed horizontal endpoint must stay on the endpoint axis');
+  assertEqual(moved[0].x, 140, 'The free bend axis should still follow the pointer');
+  assertEqual(moved[1].x, 140, 'The connected vertical run should slide with the moved bend');
 });
 
 harness.test('F09: Wire polyline preserves authored waypoints without autorouting', () => {

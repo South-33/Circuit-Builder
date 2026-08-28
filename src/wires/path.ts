@@ -47,6 +47,71 @@ export function isOrthogonalPair(a: WirePoint, b: WirePoint) {
   return axisBetween(a, b) !== null;
 }
 
+function inferredAxis(a: WirePoint, b: WirePoint): WireAxis {
+  return axisBetween(a, b) ?? (Math.abs(b.x - a.x) >= Math.abs(b.y - a.y) ? 'horizontal' : 'vertical');
+}
+
+/**
+ * Move one existing bend without turning its neighboring wire runs diagonal.
+ * The moved corner can slide along the route, and any connected collinear run
+ * follows it until a perpendicular corner is reached. If that run reaches a
+ * real endpoint, that axis is locked to the endpoint instead of moving the pin.
+ */
+export function moveOrthogonalWaypoint(
+  start: WirePoint,
+  waypoints: WirePoint[],
+  end: WirePoint,
+  waypointIndex: number,
+  target: WirePoint,
+) {
+  if (waypointIndex < 0 || waypointIndex >= waypoints.length) return structuredClone(waypoints);
+
+  const points = [start, ...waypoints.map((point) => ({ ...point })), end];
+  const movedIndex = waypointIndex + 1;
+  const lastIndex = points.length - 1;
+  const incomingAxis = inferredAxis(points[movedIndex - 1], points[movedIndex]);
+  const outgoingAxis = inferredAxis(points[movedIndex], points[movedIndex + 1]);
+
+  const backwardBoundary = (axis: WireAxis) => {
+    let index = movedIndex;
+    while (index > 0 && inferredAxis(points[index - 1], points[index]) === axis) index -= 1;
+    return index;
+  };
+  const forwardBoundary = (axis: WireAxis) => {
+    let index = movedIndex;
+    while (index < lastIndex && inferredAxis(points[index], points[index + 1]) === axis) index += 1;
+    return index;
+  };
+
+  const incomingBoundary = backwardBoundary(incomingAxis);
+  const outgoingBoundary = forwardBoundary(outgoingAxis);
+  const moved = { ...target };
+
+  if (incomingBoundary === 0) {
+    if (incomingAxis === 'horizontal') moved.y = start.y;
+    else moved.x = start.x;
+  }
+  if (outgoingBoundary === lastIndex) {
+    if (outgoingAxis === 'horizontal') moved.y = end.y;
+    else moved.x = end.x;
+  }
+  points[movedIndex] = moved;
+
+  const moveRun = (from: number, to: number, axis: WireAxis) => {
+    const min = Math.min(from, to);
+    const max = Math.max(from, to);
+    for (let index = min; index <= max; index++) {
+      if (index === 0 || index === lastIndex) continue;
+      if (axis === 'horizontal') points[index].y = moved.y;
+      else points[index].x = moved.x;
+    }
+  };
+  moveRun(incomingBoundary, movedIndex, incomingAxis);
+  moveRun(movedIndex, outgoingBoundary, outgoingAxis);
+
+  return simplifyWirePoints(points).slice(1, -1);
+}
+
 export function roundedPath(points: WirePoint[], radius = 3.5): string {
   if (!points.length) return '';
   if (points.length === 1) return `M ${points[0].x} ${points[0].y}`;

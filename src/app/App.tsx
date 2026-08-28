@@ -30,7 +30,7 @@ import { circuitStore } from '../circuit/store';
 import type { SnapMode } from '../breadboard/placement';
 import { findNearestBreadboardPin, getBreadboardGeometry, isBreadboardType } from '../breadboard/geometry';
 import { endpointPoint, partRect, pinExitDirection } from '../wires/geometry';
-import { connectionPolyline, nearestPointOnPolyline, roundedPath, type WireAxis } from '../wires/path';
+import { connectionPolyline, moveOrthogonalWaypoint, nearestPointOnPolyline, roundedPath, type WireAxis } from '../wires/path';
 import type { CircuitConnection, CircuitPart, PartType, WirePoint } from '../circuit/types';
 import { highlightArduinoCode } from './highlight';
 import { ComponentsView, exportComponentsCsv } from './ComponentsView';
@@ -542,6 +542,7 @@ function WireWaypointHandle({
   const dragRef = useRef<{
     pointerId: number;
     targets: ReturnType<typeof collectWireAlignmentTargets>;
+    originalWaypoints: WirePoint[];
   } | null>(null);
 
   return (
@@ -553,9 +554,12 @@ function WireWaypointHandle({
       onPointerDown={(event) => {
         if (disabled) return;
         event.stopPropagation();
+        const connection = circuitStore.getSnapshot().connections.find((candidate) => candidate.id === wireId);
+        if (!connection) return;
         dragRef.current = {
           pointerId: event.pointerId,
           targets: collectWireAlignmentTargets(parts, connections, wireId, index),
+          originalWaypoints: structuredClone(connection.waypoints ?? []),
         };
         event.currentTarget.setPointerCapture(event.pointerId);
       }}
@@ -568,9 +572,16 @@ function WireWaypointHandle({
         onAlignmentGuidesChange(snapped.guides);
         const connection = circuitStore.getSnapshot().connections.find((candidate) => candidate.id === wireId);
         if (!connection) return;
-        const waypoints = [...(connection.waypoints ?? [])];
-        if (index >= waypoints.length) return;
-        waypoints[index] = nextPoint;
+        const start = endpointPoint(connection.from, parts);
+        const end = endpointPoint(connection.to, parts);
+        if (!start || !end) return;
+        const waypoints = moveOrthogonalWaypoint(
+          start,
+          dragRef.current.originalWaypoints,
+          end,
+          index,
+          nextPoint,
+        );
         circuitStore.previewConnectionWaypoints(wireId, waypoints);
       }}
       onPointerUp={(event) => {

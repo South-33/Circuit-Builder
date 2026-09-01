@@ -16,7 +16,31 @@ function axisBetween(a: WirePoint, b: WirePoint): WireAxis | null {
 export function simplifyWirePoints(points: WirePoint[]): WirePoint[] {
   const result: WirePoint[] = [];
   for (const point of points) {
-    if (!result.length || !same(result[result.length - 1], point)) result.push({ ...point });
+    if (result.length && same(result[result.length - 1], point)) continue;
+    result.push({ ...point });
+    let changed = true;
+    while (changed && result.length >= 3) {
+      changed = false;
+      const a = result[result.length - 3];
+      const b = result[result.length - 2];
+      const c = result[result.length - 1];
+      if (same(a, c)) {
+        result.splice(result.length - 2, 2);
+        changed = true;
+        continue;
+      }
+      const firstAxis = axisBetween(a, b);
+      const secondAxis = axisBetween(b, c);
+      const continuesForward = firstAxis === 'horizontal'
+        ? (b.x - a.x) * (c.x - b.x) >= 0
+        : firstAxis === 'vertical'
+          ? (b.y - a.y) * (c.y - b.y) >= 0
+          : false;
+      if (firstAxis && firstAxis === secondAxis && continuesForward) {
+        result.splice(result.length - 2, 1);
+        changed = true;
+      }
+    }
   }
   return result;
 }

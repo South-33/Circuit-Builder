@@ -37,35 +37,6 @@ function nextNumericId(existing: string[], prefix: string) {
   return `${prefix}${max + 1}`;
 }
 
-function rewireWaypoints(
-  from: string,
-  to: string,
-  waypoints: WirePoint[],
-  parts: CircuitPart[],
-) {
-  const start = endpointPoint(from, parts);
-  const end = endpointPoint(to, parts);
-  if (!start || !end) return structuredClone(waypoints);
-
-  const points = simplifyWirePoints(waypoints);
-  const first = points[0] ?? end;
-  if (!isOrthogonalPair(start, first)) {
-    const direction = pinExitDirection(from, parts);
-    points.unshift(direction === 'up' || direction === 'down'
-      ? { x: start.x, y: first.y }
-      : { x: first.x, y: start.y });
-  }
-
-  const last = points.at(-1) ?? start;
-  if (!isOrthogonalPair(last, end)) {
-    const direction = pinExitDirection(to, parts);
-    points.push(direction === 'left' || direction === 'right'
-      ? { x: last.x, y: end.y }
-      : { x: end.x, y: last.y });
-  }
-  return normalizeWaypoints(start, simplifyWirePoints(points), end);
-}
-
 class CircuitStore {
   private state: CircuitDocument = {
     version: 1,
@@ -153,7 +124,7 @@ class CircuitStore {
   movePart(id: string, left: number, top: number, recordHistory = true, snapMode: SnapMode = 'normal', alignmentThreshold = 6) {
     const current = this.state.parts.find((part) => part.id === id);
     if (!current) return;
-    const placement = snapPartPlacement(current, left, top, this.state.parts, snapMode, alignmentThreshold);
+    const placement = snapPartPlacement(current, left, top, this.state.parts, snapMode, alignmentThreshold, this.state.connections);
     const moved: CircuitPart = {
       ...current,
       left: placement.left,
@@ -360,6 +331,7 @@ class CircuitStore {
         from,
         to,
         color: candidate.color || existing?.color || '#24a35a',
+        ...(candidate.netId || existing?.netId ? { netId: candidate.netId || existing?.netId } : {}),
         waypoints: [],
       };
       const requested = candidate.waypoints ?? existing?.waypoints ?? [];
@@ -386,11 +358,8 @@ class CircuitStore {
   setConnectionWaypoints(id: string, waypoints: WirePoint[], recordHistory = true) {
     const existing = this.state.connections.find((connection) => connection.id === id);
     if (!existing) return;
-    const start = endpointPoint(existing.from, this.state.parts);
-    const end = endpointPoint(existing.to, this.state.parts);
-    const normalized = start && end ? normalizeWaypoints(start, waypoints, end) : structuredClone(waypoints);
     const connections = this.state.connections.map((connection) =>
-      connection.id === id ? { ...connection, waypoints: normalized } : connection,
+      connection.id === id ? { ...connection, waypoints: structuredClone(waypoints) } : connection,
     );
     if (recordHistory) this.commit(this.state.parts, connections, id);
     else this.setTransient({ connections, selectedId: id });
@@ -411,7 +380,7 @@ class CircuitStore {
     ));
     if (duplicate) throw new Error(`That connection already exists as ${duplicate.id}.`);
 
-    const waypoints = rewireWaypoints(from, to, existing.waypoints ?? [], this.state.parts);
+    const waypoints = structuredClone(existing.waypoints ?? []);
     const connections = this.state.connections.map((connection) =>
       connection.id === id ? { ...connection, from, to, waypoints } : connection,
     );

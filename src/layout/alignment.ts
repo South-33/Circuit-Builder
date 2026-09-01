@@ -1,7 +1,7 @@
 import { getPartPins } from '../components/parts';
 import { BREADBOARD_HOLE_PITCH } from '../breadboard/geometry';
 import type { CircuitConnection, CircuitPart, WirePoint } from '../circuit/types';
-import { endpointPoint, partRect } from '../wires/geometry';
+import { endpointParts, endpointPoint, localPinPoint, partRect } from '../wires/geometry';
 
 export type AlignmentGuide = { axis: 'x' | 'y'; value: number };
 export type AlignmentTargets = { xs: Set<number>; ys: Set<number> };
@@ -141,10 +141,35 @@ export function alignPartToParts(
   proposedTop: number,
   allParts: CircuitPart[],
   threshold: number,
+  connections: CircuitConnection[] = [],
 ) {
   const moving = { ...part, left: proposedLeft, top: proposedTop, seating: undefined };
   const movingAxes = rectAxes(partRect(moving));
   const targets: AlignmentTargets = { xs: new Set(), ys: new Set() };
+
+  // Connected pin axes matter more than component-box edges. This permits a
+  // small sub-cell slide while preserving canonical component and pin geometry.
+  const connectedDeltas = connections.flatMap((connection) => {
+    const from = endpointParts(connection.from);
+    const to = endpointParts(connection.to);
+    if (!from || !to) return [];
+    const movingEnd = from.partId === part.id ? from : to.partId === part.id ? to : null;
+    const fixedEnd = from.partId === part.id ? to : to.partId === part.id ? from : null;
+    if (!movingEnd || !fixedEnd) return [];
+    const movingPoint = localPinPoint(moving, movingEnd.pinName);
+    const fixedPoint = endpointPoint(`${fixedEnd.partId}:${fixedEnd.pinName}`, allParts);
+    if (!movingPoint || !fixedPoint) return [];
+    return [{
+      dx: fixedPoint.x - (moving.left + movingPoint.x),
+      dy: fixedPoint.y - (moving.top + movingPoint.y),
+      target: fixedPoint,
+    }];
+  });
+
+  const nearestConnected = (axis: 'x' | 'y') => connectedDeltas
+    .map((candidate) => ({ delta: axis === 'x' ? candidate.dx : candidate.dy, target: candidate.target[axis] }))
+    .filter((candidate) => Math.abs(candidate.delta) <= threshold)
+    .sort((a, b) => Math.abs(a.delta) - Math.abs(b.delta))[0] ?? null;
 
   for (const other of allParts) {
     if (other.id === part.id) continue;
@@ -154,8 +179,8 @@ export function alignPartToParts(
     axes.ys.forEach((value) => targets.ys.add(value));
   }
 
-  const x = nearestAxisDelta(movingAxes.xs, targets.xs, threshold);
-  const y = nearestAxisDelta(movingAxes.ys, targets.ys, threshold);
+  const x = nearestConnected('x') ?? nearestAxisDelta(movingAxes.xs, targets.xs, threshold);
+  const y = nearestConnected('y') ?? nearestAxisDelta(movingAxes.ys, targets.ys, threshold);
   const guides: AlignmentGuide[] = [];
   if (x) guides.push({ axis: 'x', value: x.target });
   if (y) guides.push({ axis: 'y', value: y.target });

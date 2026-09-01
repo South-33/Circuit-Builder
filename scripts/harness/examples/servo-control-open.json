@@ -1,0 +1,22 @@
+{
+  "name": "servo-control-open",
+  "visualReference": "Known bad challenge: coarse zones are reasonable, but independently chosen power and ground rail branches create hooks and crossings near the servo and potentiometer.",
+  "calls": [
+    {
+      "tool": "build-circuit",
+      "input": {
+        "replace": true,
+        "program": "const uno = part(\"uno\",\"arduino-uno\",{\"at\":[-34,0]})\nconst board = part(\"board\",\"breadboard-half\",{\"at\":[0,4]})\nconst servo = part(\"servo\",\"servo\",{\"at\":[39,18]})\nconst pot = part(\"pot\",\"potentiometer\",{\"at\":[13,28],\"rotate\":180})\nwire(\"pwm\",\"uno.9\",\"servo.PWM\",\"signal\")\nwire(\"pot-signal\",\"uno.A0\",\"pot.SIG\",\"signal\")\nrail(\"fivevolt\",\"board\",\"+bottom\",\"uno.5V\",[\"servo.V+\",\"pot.VCC\"])\nrail(\"ground\",\"board\",\"-bottom\",\"uno.GND.2\",[\"servo.GND\",\"pot.GND\"])",
+        "code": "#include <Servo.h>\nServo servo;\nvoid setup() { servo.attach(9); }\nvoid loop() { servo.write(map(analogRead(A0), 0, 1023, 0, 180)); delay(15); }"
+      }
+    },
+    {
+      "tool": "simulate",
+      "input": {
+        "action": "start",
+        "observeMs": 800,
+        "samples": 4
+      }
+    }
+  ]
+}

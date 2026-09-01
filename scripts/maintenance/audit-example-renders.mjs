@@ -7,11 +7,13 @@ import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { HEX_FIXTURES } from '../testing/fixtures.mjs';
+import { DENSE_NET_SERVO_INPUT, MOTOR_SWITCH_INPUT } from '../testing/agent-fixtures.mjs';
 
 const root = path.resolve(path.dirname(new URL(import.meta.url).pathname.replace(/^\/(.:)/, '$1')), '../..');
 const serverPort = 4480 + Math.floor(Math.random() * 250);
 const debugPort = 9680 + Math.floor(Math.random() * 250);
-const serverUrl = `http://127.0.0.1:${serverPort}/?harness=c`;
+const serverUrl = `http://127.0.0.1:${serverPort}/`;
 const outDir = path.join(root, 'benchmark-results', 'example-renders');
 
 function findChrome() {
@@ -133,7 +135,7 @@ try {
       const [{ CIRCUIT_PRESETS }, { circuitStore }, { evaluateLayout }, { diagnoseCircuit }] = await Promise.all([
         import('/src/circuit/presets.ts'),
         import('/src/circuit/store.ts'),
-        import('/src/agent/core/layout.ts'),
+        import('/src/layout/quality.ts'),
         import('/src/sim/diagnostics.ts'),
       ]);
       const preset = CIRCUIT_PRESETS.find((item) => item.id === ${JSON.stringify(id)});
@@ -147,8 +149,6 @@ try {
         id: preset.id,
         parts: state.parts.length,
         wires: state.connections.length,
-        score: quality.score,
-        grade: quality.grade,
         issues: quality.issues.length,
         issueKinds: quality.issues.map((item) => item.kind).join(','),
         issueDetails: quality.issues.map((item) => item.kind + ': ' + item.message),
@@ -161,46 +161,207 @@ try {
     fs.writeFileSync(path.join(outDir, `${id}-authored.png`), Buffer.from(shot.data, 'base64'));
     rows.push({ ...report, mode: 'authored' });
 
-    const routedReport = await cdp.evaluate(`(async () => {
-      const [{ circuitStore }, { autoRouteConnections }, { evaluateLayout }, { diagnoseCircuit }, { inferWireKind }] = await Promise.all([
-        import('/src/circuit/store.ts'),
-        import('/src/agent/core/router.ts'),
-        import('/src/agent/core/layout.ts'),
-        import('/src/sim/diagnostics.ts'),
-        import('/src/agent/core/wiring.ts'),
-      ]);
-      const state = circuitStore.getSnapshot();
-      const routed = autoRouteConnections(state.parts, state.connections.map((wire) => ({
-        id: wire.id,
-        from: wire.from,
-        to: wire.to,
-        color: wire.color,
-        role: inferWireKind(wire.from, wire.to),
-      })));
-      circuitStore.replaceDocument({ parts: state.parts, connections: routed });
-      window.dispatchEvent(new Event('webmcp:frame-circuit'));
-      await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
-      const next = circuitStore.getSnapshot();
-      const quality = evaluateLayout(next);
-      const diagnostics = diagnoseCircuit(next);
-      return {
-        id: ${JSON.stringify(id)},
-        parts: next.parts.length,
-        wires: next.connections.length,
-        score: quality.score,
-        grade: quality.grade,
-        issues: quality.issues.length,
-        issueKinds: quality.issues.map((item) => item.kind).join(','),
-        issueDetails: quality.issues.map((item) => item.kind + ': ' + item.message),
-        diagnosticErrors: diagnostics.filter((item) => item.severity === 'error').length,
-        diagnosticWarnings: diagnostics.filter((item) => item.severity === 'warning').length,
-      };
-    })()`);
-    await new Promise((resolve) => setTimeout(resolve, 120));
-    const routedShot = await cdp.call('Page.captureScreenshot', { format: 'png', fromSurface: true });
-    fs.writeFileSync(path.join(outDir, `${id}-autorouted.png`), Buffer.from(routedShot.data, 'base64'));
-    rows.push({ ...routedReport, mode: 'autorouted' });
   }
+
+  // Keep one small production-tool fixture in the browser loop. It catches
+  // regressions in exact pin leads and orthogonal routing without maintaining
+  // a second audit-only router.
+  const blockReport = await cdp.evaluate(`(async () => {
+    const [{ createBuildCircuitTool }, { circuitStore }, { evaluateLayout }, { diagnoseCircuit }, { endpointPoint }, { connectionPolyline, isOrthogonalPair }] = await Promise.all([
+      import('/src/agent/buildCircuit.ts'),
+      import('/src/circuit/store.ts'),
+      import('/src/layout/quality.ts'),
+      import('/src/sim/diagnostics.ts'),
+      import('/src/wires/geometry.ts'),
+      import('/src/wires/path.ts'),
+    ]);
+    const tool = createBuildCircuitTool();
+    await tool.execute({
+      replace: true,
+      parts: [
+        { id: 'uno', type: 'arduino-uno', at: [-35, 0] },
+        { id: 'servo', type: 'servo', at: [5, 0] },
+      ],
+      wires: [
+        { id: 'pwm', from: 'uno:9', to: 'servo:PWM', role: 'signal', path: [[-5, -2], [3, -2], [3, 5]] },
+      ],
+    }, { signal: new AbortController().signal });
+    window.dispatchEvent(new Event('webmcp:frame-circuit'));
+    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    const state = circuitStore.getSnapshot();
+    const quality = evaluateLayout(state);
+    const diagnostics = diagnoseCircuit(state);
+    const wire = state.connections.find((item) => item.id === 'pwm');
+    const start = endpointPoint(wire.from, state.parts);
+    const end = endpointPoint(wire.to, state.parts);
+    const points = connectionPolyline(start, wire.waypoints, end);
+    return {
+      id: 'exact-pin-routing',
+      parts: state.parts.length,
+      wires: state.connections.length,
+      issues: quality.issues.length,
+      issueKinds: quality.issues.map((item) => item.kind).join(','),
+      issueDetails: quality.issues.map((item) => item.kind + ': ' + item.message),
+      diagnosticErrors: diagnostics.filter((item) => item.severity === 'error').length,
+      diagnosticWarnings: diagnostics.filter((item) => item.severity === 'warning').length,
+      orthogonal: points.every((point, index) => index === points.length - 1 || isOrthogonalPair(point, points[index + 1])),
+      points,
+    };
+  })()`);
+  await new Promise((resolve) => setTimeout(resolve, 120));
+  const blockShot = await cdp.call('Page.captureScreenshot', { format: 'png', fromSurface: true });
+  fs.writeFileSync(path.join(outDir, 'exact-pin-routing.png'), Buffer.from(blockShot.data, 'base64'));
+  if (blockReport.issues > 0 || blockReport.diagnosticErrors > 0 || !blockReport.orthogonal) {
+    throw new Error(`Exact-pin visual fixture failed: ${JSON.stringify(blockReport)}`);
+  }
+  rows.push({ ...blockReport, mode: 'block-fixture' });
+
+  const alignedPinReport = await cdp.evaluate(`(async () => {
+    const [{ createBuildCircuitTool }, { circuitStore }, { endpointPoint }, { connectionPolyline }] = await Promise.all([
+      import('/src/agent/buildCircuit.ts'),
+      import('/src/circuit/store.ts'),
+      import('/src/wires/geometry.ts'),
+      import('/src/wires/path.ts'),
+    ]);
+    await createBuildCircuitTool().execute({
+      replace: true,
+      parts: [
+        { id: 'uno', type: 'arduino-uno', at: [-25, -20] },
+        { id: 'pot', type: 'potentiometer', at: [-11, 25], rotate: 180 },
+      ],
+      align: [{ from: 'pot:VCC', to: 'uno:5V', axis: 'x' }],
+      wires: [{ id: 'power', from: 'uno:5V', to: 'pot:VCC', role: 'power' }],
+    }, { signal: new AbortController().signal });
+    window.dispatchEvent(new Event('webmcp:frame-circuit'));
+    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    const state = circuitStore.getSnapshot();
+    const wire = state.connections.find((item) => item.id === 'power');
+    const start = endpointPoint(wire.from, state.parts);
+    const end = endpointPoint(wire.to, state.parts);
+    const points = connectionPolyline(start, wire.waypoints, end);
+    return {
+      id: 'aligned-pin-axis',
+      parts: state.parts.length,
+      wires: state.connections.length,
+      straight: points.every((point) => Math.abs(point.x - start.x) < 0.01),
+      points,
+    };
+  })()`);
+  await new Promise((resolve) => setTimeout(resolve, 120));
+  const alignedPinShot = await cdp.call('Page.captureScreenshot', { format: 'png', fromSurface: true });
+  fs.writeFileSync(path.join(outDir, 'aligned-pin-axis.png'), Buffer.from(alignedPinShot.data, 'base64'));
+  if (!alignedPinReport.straight) throw new Error(`Aligned-pin visual fixture failed: ${JSON.stringify(alignedPinReport)}`);
+  rows.push({ ...alignedPinReport, mode: 'block-fixture' });
+
+  const blockServoReport = await cdp.evaluate(`(async () => {
+    const input = ${JSON.stringify(DENSE_NET_SERVO_INPUT)};
+    const [{ createBuildCircuitTool }, { circuitStore }, { evaluateLayout }, { diagnoseCircuit }, { endpointPoint }, { connectionPolyline, isOrthogonalPair }] = await Promise.all([
+      import('/src/agent/buildCircuit.ts'),
+      import('/src/circuit/store.ts'),
+      import('/src/layout/quality.ts'),
+      import('/src/sim/diagnostics.ts'),
+      import('/src/wires/geometry.ts'),
+      import('/src/wires/path.ts'),
+    ]);
+    await createBuildCircuitTool().execute(input, { signal: new AbortController().signal });
+    window.dispatchEvent(new Event('webmcp:frame-circuit'));
+    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    const state = circuitStore.getSnapshot();
+    const quality = evaluateLayout(state);
+    const diagnostics = diagnoseCircuit(state);
+    const orthogonal = state.connections.every((wire) => {
+      const start = endpointPoint(wire.from, state.parts);
+      const end = endpointPoint(wire.to, state.parts);
+      if (!start || !end) return false;
+      const points = connectionPolyline(start, wire.waypoints, end);
+      return points.every((point, index) => index === points.length - 1 || isOrthogonalPair(point, points[index + 1]));
+    });
+    return {
+      id: 'multi-net-servo-control',
+      parts: state.parts.length,
+      wires: state.connections.length,
+      issues: quality.issues.length,
+      issueKinds: quality.issues.map((item) => item.kind).join(','),
+      issueDetails: quality.issues.map((item) => item.kind + ': ' + item.message),
+      diagnosticErrors: diagnostics.filter((item) => item.severity === 'error').length,
+      diagnosticWarnings: diagnostics.filter((item) => item.severity === 'warning').length,
+      orthogonal,
+      seatedParts: state.parts.filter((part) => part.seating?.breadboardId === 'bb').map((part) => part.id),
+    };
+  })()`);
+  await new Promise((resolve) => setTimeout(resolve, 120));
+  const blockServoShot = await cdp.call('Page.captureScreenshot', { format: 'png', fromSurface: true });
+  fs.writeFileSync(path.join(outDir, 'multi-net-servo-control.png'), Buffer.from(blockServoShot.data, 'base64'));
+  if (blockServoReport.issues > 0 || blockServoReport.diagnosticErrors > 0 || blockServoReport.diagnosticWarnings > 0 || !blockServoReport.orthogonal) {
+    throw new Error(`Production servo-control visual fixture failed: ${JSON.stringify(blockServoReport)}`);
+  }
+  if (blockServoReport.parts !== 4 || blockServoReport.wires !== 9 || blockServoReport.seatedParts.length !== 0) {
+    throw new Error(`Production servo-control fixture changed shape unexpectedly: ${JSON.stringify(blockServoReport)}`);
+  }
+  rows.push({ ...blockServoReport, mode: 'block-servo-fixture' });
+
+  const blockInspect = await cdp.evaluate(`(async () => {
+    const raw = await window.webmcp_call_tool('inspect-circuit', {
+      includePins: true,
+      pinPartIds: ['uno'],
+      includeLayout: true,
+      catalogTypes: ['servo'],
+    });
+    const report = raw?.structuredContent ?? raw;
+    const uno = report.parts.find((part) => part.id === 'uno');
+    const servoCatalog = report.catalog?.find((part) => part.type === 'wokwi-servo' || part.type === 'servo');
+    const wire = report.connections.find((item) => item.id === 'servo-pwm');
+    return {
+      cellPixels: report.coordinateSystem?.cellPixels,
+      componentCoordinate: report.coordinateSystem?.componentCoordinate,
+      uno,
+      servoCatalog,
+      wire,
+      layoutKind: report.layout?.kind,
+    };
+  })()`);
+  if (blockInspect.cellPixels !== 9.6 || blockInspect.componentCoordinate !== 'block top-left cell') {
+    throw new Error(`Production inspection must stay in one physical block coordinate system: ${JSON.stringify(blockInspect)}`);
+  }
+  if (!blockInspect.uno?.blockAt || !blockInspect.uno?.blockSize || 'grid' in blockInspect.uno || 'centerGrid' in blockInspect.uno || 'gridSize' in blockInspect.uno) {
+    throw new Error(`Production inspection leaked the old 32px component grid: ${JSON.stringify(blockInspect.uno)}`);
+  }
+  if (!Array.isArray(blockInspect.wire?.routePx) || 'gridWaypoints' in (blockInspect.wire ?? {}) || 'routeCells' in (blockInspect.wire ?? {})) {
+    throw new Error(`Production inspection must report exact routePx instead of legacy grid routes: ${JSON.stringify(blockInspect.wire)}`);
+  }
+  if (!blockInspect.servoCatalog?.blockSize || blockInspect.servoCatalog?.gridSize || blockInspect.layoutKind !== 'block-grid') {
+    throw new Error(`Production catalog/layout metadata must use block-world geometry: ${JSON.stringify(blockInspect)}`);
+  }
+
+  const motorReport = await cdp.evaluate(`(async () => {
+    const input = ${JSON.stringify(MOTOR_SWITCH_INPUT)};
+    const [{ createBuildCircuitTool }, { circuitStore }, { evaluateLayout }, { diagnoseCircuit }] = await Promise.all([
+      import('/src/agent/buildCircuit.ts'),
+      import('/src/circuit/store.ts'),
+      import('/src/layout/quality.ts'),
+      import('/src/sim/diagnostics.ts'),
+    ]);
+    await createBuildCircuitTool().execute(input, { signal: new AbortController().signal });
+    window.dispatchEvent(new Event('webmcp:frame-circuit'));
+    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    const state = circuitStore.getSnapshot();
+    const quality = evaluateLayout(state);
+    const diagnostics = diagnoseCircuit(state);
+    return {
+      id: 'motor-switch',
+      parts: state.parts.length,
+      wires: state.connections.length,
+      issues: quality.issues.length,
+      issueKinds: quality.issues.map((item) => item.kind).join(','),
+      issueDetails: quality.issues.map((item) => item.kind + ': ' + item.message),
+      diagnosticErrors: diagnostics.filter((item) => item.severity === 'error').length,
+      diagnosticWarnings: diagnostics.filter((item) => item.severity === 'warning').length,
+    };
+  })()`);
+  await new Promise((resolve) => setTimeout(resolve, 120));
+  const motorShot = await cdp.call('Page.captureScreenshot', { format: 'png', fromSurface: true });
+  fs.writeFileSync(path.join(outDir, 'motor-switch.png'), Buffer.from(motorShot.data, 'base64'));
+  rows.push({ ...motorReport, mode: 'block-motor-fixture' });
 
   const interactionCheck = await cdp.evaluate(`(async () => {
     const [{ CIRCUIT_PRESETS }, { circuitStore }] = await Promise.all([
@@ -232,6 +393,55 @@ try {
     throw new Error(`Selected wires must expose exactly two rewiring endpoint handles; found ${interactionCheck.endpoints}.`);
   }
 
+  const runtimeFixture = HEX_FIXTURES.blink;
+  const runtimeAudit = await cdp.evaluate(`(async () => {
+    const fixture = ${JSON.stringify(runtimeFixture)};
+    const hash = (source) => {
+      let value = 2166136261;
+      for (let index = 0; index < source.length; index++) {
+        value ^= source.charCodeAt(index);
+        value = Math.imul(value, 16777619);
+      }
+      return (value >>> 0).toString(36);
+    };
+    localStorage.setItem(
+      'hardware-lab:hex:v2:' + hash(fixture.sketch),
+      JSON.stringify({ source: fixture.sketch, result: { stdout: '', stderr: '', hex: fixture.hex } }),
+    );
+    const [{ circuitStore }, { simulator }] = await Promise.all([
+      import('/src/circuit/store.ts'),
+      import('/src/sim/simulator.ts'),
+    ]);
+    circuitStore.replaceDocument({
+      parts: [{
+        id: 'runtime-uno',
+        type: 'wokwi-arduino-uno',
+        left: 520,
+        top: 300,
+        rotate: 0,
+        attrs: {},
+        code: fixture.sketch,
+      }],
+      connections: [],
+    });
+    circuitStore.select(null);
+    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    const started = await simulator.start();
+    const observation = await simulator.observe(900, 14);
+    const board = observation.parts.find((part) => part.id === 'runtime-uno');
+    const stopped = simulator.stop();
+    return { started, observation, board, stopped, finalStatus: circuitStore.getSnapshot().simulation.status };
+  })()`);
+  const ledValues = runtimeAudit.board?.observed?.led13 ?? [];
+  if (!ledValues.includes(true) || !ledValues.includes(false)) {
+    throw new Error(`Runtime observation must see the Blink sketch drive LED13 both HIGH and LOW; saw ${JSON.stringify(ledValues)}.`);
+  }
+  if (!(runtimeAudit.board?.observed?.powerLed ?? []).includes(true)) {
+    throw new Error('Runtime observation must report the Uno power LED while simulation is running.');
+  }
+  if (runtimeAudit.finalStatus !== 'stopped') {
+    throw new Error(`Simulation runtime audit must stop cleanly; final status was ${runtimeAudit.finalStatus}.`);
+  }
   console.table(rows.map(({ issueDetails: _issueDetails, ...row }) => row));
   for (const row of rows.filter((item) => item.issues > 0)) {
     console.log(`\n${row.id} [${row.mode}]`);

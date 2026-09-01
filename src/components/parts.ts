@@ -17,12 +17,12 @@ const DC_MOTOR_PINS: readonly PinInfo[] = [
 const FRITZING_SCALE = 4 / 3;
 const NPN_TRANSISTOR_PINS: readonly PinInfo[] = [
   { name: 'E', x: 1.08 * FRITZING_SCALE, y: 22.581 * FRITZING_SCALE, description: 'Emitter', signals: [] },
-  { name: 'B', x: 8.261 * FRITZING_SCALE, y: 22.581 * FRITZING_SCALE, description: 'Base', signals: [] },
-  { name: 'C', x: 15.447 * FRITZING_SCALE, y: 22.581 * FRITZING_SCALE, description: 'Collector', signals: [] },
+  { name: 'B', x: 8.28 * FRITZING_SCALE, y: 22.581 * FRITZING_SCALE, description: 'Base', signals: [] },
+  { name: 'C', x: 15.48 * FRITZING_SCALE, y: 22.581 * FRITZING_SCALE, description: 'Collector', signals: [] },
 ];
 const RECTIFIER_DIODE_PINS: readonly PinInfo[] = [
   { name: 'C', x: 0.511 * FRITZING_SCALE, y: 3.594 * FRITZING_SCALE, description: 'Cathode', signals: [] },
-  { name: 'A', x: 29.371 * FRITZING_SCALE, y: 3.708 * FRITZING_SCALE, description: 'Anode', signals: [] },
+  { name: 'A', x: 29.311 * FRITZING_SCALE, y: 3.594 * FRITZING_SCALE, description: 'Anode', signals: [] },
 ];
 const BATTERY_9V_PINS: readonly PinInfo[] = [
   { name: '-', x: 95.628 * FRITZING_SCALE, y: 17.657 * FRITZING_SCALE, description: 'Negative terminal', signals: [{ type: 'power', voltage: 0 }] },
@@ -30,12 +30,12 @@ const BATTERY_9V_PINS: readonly PinInfo[] = [
 ];
 const PNP_TRANSISTOR_PINS: readonly PinInfo[] = [
   { name: 'E', x: 1.08 * FRITZING_SCALE, y: 22.581 * FRITZING_SCALE, description: 'Emitter', signals: [] },
-  { name: 'B', x: 8.261 * FRITZING_SCALE, y: 22.581 * FRITZING_SCALE, description: 'Base', signals: [] },
-  { name: 'C', x: 15.447 * FRITZING_SCALE, y: 22.581 * FRITZING_SCALE, description: 'Collector', signals: [] },
+  { name: 'B', x: 8.28 * FRITZING_SCALE, y: 22.581 * FRITZING_SCALE, description: 'Base', signals: [] },
+  { name: 'C', x: 15.48 * FRITZING_SCALE, y: 22.581 * FRITZING_SCALE, description: 'Collector', signals: [] },
 ];
 const ZENER_DIODE_PINS: readonly PinInfo[] = [
   { name: 'C', x: 0.511 * FRITZING_SCALE, y: 3.594 * FRITZING_SCALE, description: 'Cathode', signals: [] },
-  { name: 'A', x: 29.371 * FRITZING_SCALE, y: 3.708 * FRITZING_SCALE, description: 'Anode', signals: [] },
+  { name: 'A', x: 29.311 * FRITZING_SCALE, y: 3.594 * FRITZING_SCALE, description: 'Anode', signals: [] },
 ];
 const BATTERY_AA_PINS: readonly PinInfo[] = [
   { name: '-', x: 12, y: 58, description: 'Negative terminal', signals: [{ type: 'power', voltage: 0 }] },
@@ -59,6 +59,8 @@ export type PartDefinition = {
   naturalSize: { width: number; height: number };
   simulated: boolean;
   pinSummary: string;
+  /** Pins whose visible cable can leave in any direction instead of a rigid header axis. */
+  flexibleLeadPins?: string[];
   breadboardMount?: boolean;
   keywords?: string[];
   properties?: PartPropertyDefinition[];
@@ -467,10 +469,12 @@ export const PART_DEFINITIONS: Record<PartType, PartDefinition> = {
     category: 'Motion',
     defaults: {},
     previewScale: 0.4,
-    renderScale: 1,
+    // 9.6 / 9.98: keep both motor terminals on the shared physical grid.
+    renderScale: 9.6 / 9.98,
     naturalSize: { width: 160.18, height: 74.29 },
     simulated: true,
     pinSummary: 'Pins 1 and 2. Polarity controls direction; PWM controls average drive.',
+    flexibleLeadPins: ['1', '2'],
     keywords: ['motor', 'dc motor', 'brushed', 'fan'],
   },
   'wokwi-membrane-keypad': {
@@ -803,7 +807,8 @@ export const PART_DEFINITIONS: Record<PartType, PartDefinition> = {
     asset: '/assets/fritzing/battery-aa.svg',
     defaults: { cells: 2 },
     previewScale: 0.28,
-    renderScale: 0.85,
+    // 198px terminal span -> exactly 18 physical 9.6px cells.
+    renderScale: 172.8 / 198,
     naturalSize: { width: 222.88, height: 116.64 },
     simulated: true,
     pinSummary: '+ (positive), - (GND). 1-4 cells (1.5V - 6.0V).',
@@ -822,7 +827,8 @@ export const PART_DEFINITIONS: Record<PartType, PartDefinition> = {
     asset: '/assets/fritzing/battery-coin-cell.svg',
     defaults: {},
     previewScale: 0.45,
-    renderScale: 0.8,
+    // 80px terminal span -> exactly 7 physical 9.6px cells.
+    renderScale: 67.2 / 80,
     naturalSize: { width: 96.95, height: 109.52 },
     simulated: true,
     pinSummary: '+ (3V positive), - (GND negative).',

@@ -31,6 +31,8 @@ export type CircuitConnection = {
   from: string;
   to: string;
   color: string;
+  /** Semantic multi-terminal net this physical edge belongs to, when any. */
+  netId?: string;
   /** User/agent-authored visual bend points. Electrical connectivity is from -> to. */
   waypoints?: WirePoint[];
 };
@@ -56,6 +58,8 @@ export type CodeRange = {
 
 export type FocusState = {
   itemIds: string[];
+  /** Exact partId:pinName endpoints to mark on the visual workspace. */
+  pins?: string[];
   code?: CodeRange;
   message?: string;
 };

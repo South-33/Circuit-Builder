@@ -1,5 +1,5 @@
 import { getPartPins, PART_DEFINITIONS } from '../components/parts';
-import type { BreadboardSeating, CircuitPart, WirePoint } from '../circuit/types';
+import type { BreadboardSeating, CircuitConnection, CircuitPart, WirePoint } from '../circuit/types';
 import { alignPartToParts, type AlignmentGuide } from '../layout/alignment';
 import { localPinPoint, partRect } from '../wires/geometry';
 import { BREADBOARD_HOLE_PITCH, isBreadboardType } from './geometry';
@@ -228,6 +228,7 @@ export function snapPartPlacement(
   allParts: CircuitPart[],
   mode: SnapMode = 'normal',
   alignmentThreshold = 6,
+  connections: CircuitConnection[] = [],
 ): PartPlacement {
   const proposed: CircuitPart = { ...part, left: proposedLeft, top: proposedTop, seating: undefined };
 
@@ -252,7 +253,7 @@ export function snapPartPlacement(
   }
 
   if (mode === 'off') return { left: proposedLeft, top: proposedTop };
-  const aligned = alignPartToParts(part, proposedLeft, proposedTop, allParts, alignmentThreshold);
+  const aligned = alignPartToParts(part, proposedLeft, proposedTop, allParts, alignmentThreshold, connections);
   const grid = mode === 'fine' ? FINE_GRID : FREE_GRID;
 
   // Snap by a real component pin when possible, not by the component's arbitrary

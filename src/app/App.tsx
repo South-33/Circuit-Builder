@@ -30,7 +30,7 @@ import { circuitStore } from '../circuit/store';
 import type { SnapMode } from '../breadboard/placement';
 import { findNearestBreadboardPin, getBreadboardGeometry, isBreadboardType } from '../breadboard/geometry';
 import { endpointPoint, partRect, pinExitDirection } from '../wires/geometry';
-import { connectionPolyline, moveOrthogonalWaypoint, nearestPointOnPolyline, roundedPath, type WireAxis } from '../wires/path';
+import { connectionPolyline, nearestPointOnPolyline, roundedPath, type WireAxis } from '../wires/path';
 import type { CircuitConnection, CircuitPart, PartType, WirePoint } from '../circuit/types';
 import { highlightArduinoCode } from './highlight';
 import { ComponentsView, exportComponentsCsv } from './ComponentsView';
@@ -313,6 +313,7 @@ const PartOnCanvas = React.memo(function PartOnCanvas({
   part,
   selected,
   focused,
+  markedPins,
   pendingWire,
   simulationRunning,
   onPinClick,
@@ -322,6 +323,7 @@ const PartOnCanvas = React.memo(function PartOnCanvas({
   part: CircuitPart;
   selected: boolean;
   focused: boolean;
+  markedPins: Set<string>;
   pendingWire: string | null;
   simulationRunning: boolean;
   onPinClick: (part: CircuitPart, pinName: string) => void;
@@ -356,6 +358,17 @@ const PartOnCanvas = React.memo(function PartOnCanvas({
       endpoint: `${part.id}:${pin.name}`,
     }));
   }, [part.type, part.id, definition.renderScale, isBreadboard]);
+  const markedBreadboardPins = useMemo(() => {
+    if (!isBreadboard) return [];
+    const names = new Set(Array.from(markedPins)
+      .filter((endpoint) => endpoint.startsWith(`${part.id}:`))
+      .map((endpoint) => endpoint.slice(endpoint.indexOf(':') + 1)));
+    if (!names.size) return [];
+    const scale = definition.renderScale;
+    return getPartPins(part)
+      .filter((pin) => names.has(pin.name))
+      .map((pin) => ({ name: pin.name, px: pin.x * scale, py: pin.y * scale, endpoint: `${part.id}:${pin.name}` }));
+  }, [part.type, part.id, definition.renderScale, isBreadboard, markedPins]);
 
   const handlePointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
     if (simulationRunning || event.button !== 0) return;
@@ -472,7 +485,7 @@ const PartOnCanvas = React.memo(function PartOnCanvas({
           <button
             type="button"
             key={pin.name}
-            className={`pin-hit${pendingWire === pin.endpoint ? ' pending' : ''}`}
+            className={`pin-hit${pendingWire === pin.endpoint ? ' pending' : ''}${markedPins.has(pin.endpoint) ? ' marked' : ''}`}
             style={{ left: pin.px, top: pin.py }}
             data-label={pin.name}
             aria-label={`${part.id} pin ${pin.name}`}
@@ -481,6 +494,14 @@ const PartOnCanvas = React.memo(function PartOnCanvas({
               event.stopPropagation();
               onPinClick(part, pin.name);
             }}
+          />
+        ))}
+        {markedBreadboardPins.map((pin) => (
+          <span
+            key={pin.endpoint}
+            className="pin-hit marked"
+            style={{ left: pin.px, top: pin.py }}
+            data-label={pin.name}
           />
         ))}
         {isBreadboard && hoverBreadboardPin && (
@@ -543,6 +564,7 @@ function WireWaypointHandle({
     pointerId: number;
     targets: ReturnType<typeof collectWireAlignmentTargets>;
     originalWaypoints: WirePoint[];
+    previewWaypoints: WirePoint[];
   } | null>(null);
 
   return (
@@ -556,10 +578,12 @@ function WireWaypointHandle({
         event.stopPropagation();
         const connection = circuitStore.getSnapshot().connections.find((candidate) => candidate.id === wireId);
         if (!connection) return;
+        const originalWaypoints = structuredClone(connection.waypoints ?? []);
         dragRef.current = {
           pointerId: event.pointerId,
           targets: collectWireAlignmentTargets(parts, connections, wireId, index),
-          originalWaypoints: structuredClone(connection.waypoints ?? []),
+          originalWaypoints,
+          previewWaypoints: structuredClone(originalWaypoints),
         };
         event.currentTarget.setPointerCapture(event.pointerId);
       }}
@@ -570,28 +594,22 @@ function WireWaypointHandle({
         const snapped = snapPointToTargets(svgEventPoint(event, svg), dragRef.current.targets, 6 / zoom);
         const nextPoint = snapped.point;
         onAlignmentGuidesChange(snapped.guides);
-        const connection = circuitStore.getSnapshot().connections.find((candidate) => candidate.id === wireId);
-        if (!connection) return;
-        const start = endpointPoint(connection.from, parts);
-        const end = endpointPoint(connection.to, parts);
-        if (!start || !end) return;
-        const waypoints = moveOrthogonalWaypoint(
-          start,
-          dragRef.current.originalWaypoints,
-          end,
-          index,
-          nextPoint,
-        );
+        const waypoints = structuredClone(dragRef.current.originalWaypoints);
+        waypoints[index] = nextPoint;
+        dragRef.current.previewWaypoints = waypoints;
         circuitStore.previewConnectionWaypoints(wireId, waypoints);
       }}
       onPointerUp={(event) => {
-        if (disabled || dragRef.current?.pointerId !== event.pointerId) return;
+        const drag = dragRef.current;
+        if (disabled || drag?.pointerId !== event.pointerId) return;
         dragRef.current = null;
-        const connection = circuitStore.getSnapshot().connections.find((candidate) => candidate.id === wireId);
-        if (connection) circuitStore.setConnectionWaypoints(wireId, connection.waypoints ?? [], true);
+        circuitStore.setConnectionWaypoints(wireId, drag.previewWaypoints, true);
         onAlignmentGuidesChange([]);
       }}
-      onPointerCancel={() => {
+      onPointerCancel={(event) => {
+        const drag = dragRef.current;
+        if (drag?.pointerId !== event.pointerId) return;
+        circuitStore.previewConnectionWaypoints(wireId, drag.originalWaypoints);
         dragRef.current = null;
         onAlignmentGuidesChange([]);
       }}
@@ -632,47 +650,38 @@ function WireEndpointHandle({
   side,
   endpoint,
   point,
-  anchor,
   otherEndpoint,
   disabled,
   parts,
   zoom,
+  onDragPointChange,
 }: {
   wireId: string;
   side: 'from' | 'to';
   endpoint: string;
   point: WirePoint;
-  anchor: WirePoint;
   otherEndpoint: string;
   disabled: boolean;
   parts: CircuitPart[];
   zoom: number;
+  onDragPointChange: (point: WirePoint | null) => void;
 }) {
-  const dragRef = useRef<{ pointerId: number; targets: WireEndpointTarget[] } | null>(null);
+  const dragRef = useRef<{
+    pointerId: number;
+    targets: WireEndpointTarget[];
+    target: WireEndpointTarget | null;
+  } | null>(null);
   const [dragPoint, setDragPoint] = useState<WirePoint | null>(null);
-  const [snapTarget, setSnapTarget] = useState<WireEndpointTarget | null>(null);
   const shownPoint = dragPoint ?? point;
 
   const clearDrag = () => {
     dragRef.current = null;
     setDragPoint(null);
-    setSnapTarget(null);
+    onDragPointChange(null);
   };
 
   return (
     <>
-      {dragPoint && (
-        <line
-          className="wire-rewire-preview"
-          x1={anchor.x}
-          y1={anchor.y}
-          x2={shownPoint.x}
-          y2={shownPoint.y}
-        />
-      )}
-      {snapTarget && dragPoint && (
-        <circle className="wire-rewire-target" cx={snapTarget.point.x} cy={snapTarget.point.y} r={8} />
-      )}
       <circle
         className={`wire-endpoint ${side === 'from' ? 'source' : 'destination'}${dragPoint ? ' dragging' : ''}${disabled ? ' disabled' : ''}`}
         cx={shownPoint.x}
@@ -685,8 +694,10 @@ function WireEndpointHandle({
           dragRef.current = {
             pointerId: event.pointerId,
             targets: collectWireEndpointTargets(parts, otherEndpoint),
+            target: null,
           };
           setDragPoint(point);
+          onDragPointChange(point);
           event.currentTarget.setPointerCapture(event.pointerId);
         }}
         onPointerMove={(event) => {
@@ -696,14 +707,15 @@ function WireEndpointHandle({
           if (!svg) return;
           const raw = svgEventPoint(event, svg);
           const target = nearestWireEndpointTarget(raw, drag.targets, 12 / zoom);
-          setSnapTarget(target);
-          setDragPoint(target?.point ?? raw);
+          const nextPoint = target?.point ?? raw;
+          drag.target = target;
+          setDragPoint(nextPoint);
+          onDragPointChange(nextPoint);
         }}
         onPointerUp={(event) => {
           const drag = dragRef.current;
           if (disabled || drag?.pointerId !== event.pointerId) return;
-          const target = snapTarget;
-          clearDrag();
+          const target = drag.target;
           if (target && target.endpoint !== endpoint) {
             try {
               circuitStore.setConnectionEndpoint(wireId, side, target.endpoint);
@@ -711,6 +723,7 @@ function WireEndpointHandle({
               // Invalid/duplicate drops simply leave the existing connection intact.
             }
           }
+          clearDrag();
         }}
         onPointerCancel={clearDrag}
       >
@@ -745,6 +758,12 @@ function Wires({
   zoom: number;
   onAlignmentGuidesChange: (guides: AlignmentGuide[]) => void;
 }) {
+  const [endpointPreview, setEndpointPreview] = useState<{
+    wireId: string;
+    side: 'from' | 'to';
+    point: WirePoint;
+  } | null>(null);
+
   return (
     <svg className="wire-layer" width={WORKSPACE_WIDTH} height={WORKSPACE_HEIGHT}>
       {alignmentGuides.map((guide, index) => guide.axis === 'x' ? (
@@ -770,7 +789,10 @@ function Wires({
         const from = endpointPoint(connection.from, parts);
         const to = endpointPoint(connection.to, parts);
         if (!from || !to) return null;
-        const points = connectionPolyline(from, connection.waypoints, to, wireAxisForEndpoint(connection.from, parts));
+        const preview = endpointPreview?.wireId === connection.id ? endpointPreview : null;
+        const shownFrom = preview?.side === 'from' ? preview.point : from;
+        const shownTo = preview?.side === 'to' ? preview.point : to;
+        const points = connectionPolyline(shownFrom, connection.waypoints, shownTo, wireAxisForEndpoint(connection.from, parts));
         const path = roundedPath(points);
         const active = selectedId === connection.id;
         const focused = focusedIds.has(connection.id);
@@ -820,22 +842,26 @@ function Wires({
                   side="from"
                   endpoint={connection.from}
                   point={from}
-                  anchor={points[1] ?? to}
                   otherEndpoint={connection.to}
                   disabled={editingDisabled}
                   parts={parts}
                   zoom={zoom}
+                  onDragPointChange={(point) => setEndpointPreview(point
+                    ? { wireId: connection.id, side: 'from', point }
+                    : null)}
                 />
                 <WireEndpointHandle
                   wireId={connection.id}
                   side="to"
                   endpoint={connection.to}
                   point={to}
-                  anchor={points.at(-2) ?? from}
                   otherEndpoint={connection.from}
                   disabled={editingDisabled}
                   parts={parts}
                   zoom={zoom}
+                  onDragPointChange={(point) => setEndpointPreview(point
+                    ? { wireId: connection.id, side: 'to', point }
+                    : null)}
                 />
               </>
             )}
@@ -1562,6 +1588,7 @@ export default function App() {
     try { return localStorage.getItem(WIRE_COLOR_STORAGE_KEY) || DEFAULT_WIRE_COLOR; } catch { return DEFAULT_WIRE_COLOR; }
   });
   const focusedIds = useMemo(() => new Set(state.focus?.itemIds ?? []), [state.focus]);
+  const focusedPins = useMemo(() => new Set(state.focus?.pins ?? []), [state.focus]);
   const focusedBoardId = state.focus?.code?.boardId;
   const selectedBoard = state.parts.find((part) => part.id === state.selectedId && part.type === 'wokwi-arduino-uno');
   const board = state.parts.find((part) => part.id === focusedBoardId)
@@ -2208,6 +2235,7 @@ export default function App() {
                 part={part}
                 selected={state.selectedId === part.id}
                 focused={focusedIds.has(part.id)}
+                markedPins={focusedPins}
                 pendingWire={wireDraft?.from ?? null}
                 simulationRunning={state.simulation.status === 'running' || state.simulation.status === 'compiling'}
                 onPinClick={handlePinClick}

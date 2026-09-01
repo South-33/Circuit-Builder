@@ -626,6 +626,13 @@ button { color: inherit; }
 .canvas-part.is-breadboard .pin-hit { width: 10px; height: 10px; margin-left: -5px; margin-top: -5px; }
 .canvas-part.is-breadboard .pin-hit::before { width: 7px; height: 7px; left: 1.5px; top: 1.5px; }
 .pin-hit.pending::before { background: #f59f00; box-shadow: 0 0 0 2px #fff, 0 0 0 6px #f59f0038; }
+.pin-hit.marked { z-index: 1000; }
+.pin-hit.marked::before {
+  opacity: 1;
+  transform: scale(1);
+  background: #f59f00;
+  box-shadow: 0 0 0 2px #fff, 0 0 0 7px #f59f0050;
+}
 .pin-hit::after {
   content: attr(data-label);
   position: absolute;
@@ -645,7 +652,8 @@ button { color: inherit; }
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
 }
 .pin-hit:hover::after,
-.pin-hit.hover::after { display: block; }
+.pin-hit.hover::after,
+.pin-hit.marked::after { display: block; }
 
 .breadboard-visual {
   position: absolute;
@@ -724,8 +732,6 @@ button { color: inherit; }
 .wire-endpoint:hover { r: 6; }
 .wire-endpoint.dragging { cursor: grabbing; }
 .wire-endpoint.disabled { cursor: default; opacity: .65; pointer-events: none; }
-.wire-rewire-preview { stroke: #2d7dd2; stroke-width: 2; stroke-dasharray: 5 4; pointer-events: none; }
-.wire-rewire-target { fill: #dceeff66; stroke: #2d7dd2; stroke-width: 1.5; pointer-events: none; }
 .wire-preview { fill: none; stroke-width: 2.8; stroke-dasharray: 6 4; stroke-linecap: round; stroke-linejoin: round; opacity: .95; }
 .wire-preview-point { fill: #fff; stroke: #333; stroke-width: 1.5; }
 @keyframes wire-pulse { from { opacity: .5; } to { opacity: 1; } }

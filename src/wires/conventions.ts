@@ -1,4 +1,4 @@
-import type { WireRole } from '../types';
+export type WireRole = 'signal' | 'power' | 'ground';
 
 export const WIRE_COLORS = {
   ground: '#343a40',
@@ -57,12 +57,10 @@ export const WIRING_GUIDE = {
     signalDefault: 'green',
   },
   routing: [
-    'Leave each physical pin in its outward-facing direction before the first turn.',
-    'Approach the destination from its outward-facing pin side; do not cut back through the component body.',
-    'Prefer monotonic source-to-destination travel. Avoid moving away from the destination and then reversing unless an obstacle requires it.',
-    'Use one lane per wire. Related wires may run as adjacent parallel lanes, but should not overlap.',
-    'Route power and ground trunks first, then branch short local connections from rails to loads.',
-    'Place and rotate external parts so their connected pins face the main wiring region before routing them.',
-    'Prefer a clean exit, one main horizontal/vertical travel lane, and a clean final approach over many small bends.',
+    'Arrange functional groups in signal or energy-flow order, but let pin-side fit outrank a conventional left-to-right layout.',
+    'Place parts where the source outward ray and destination inward ray can meet with at most one main bend; leave approach space for every pin in the bank.',
+    'Choose an open wiring channel first. Align connected pin banks along it, then rotate or slide parts to remove any avoidable direction reversal.',
+    'Reserve separate parallel distribution lanes for shared power and ground at the edge of a functional group; place consumers for short local drops.',
+    'Leave an open channel between connected pin banks. The exact router owns pin exits, bends, and lane separation.',
   ],
 } as const;

@@ -14,6 +14,3 @@ export type ModelContext = {
   getTools?: () => Promise<Array<{ name: string; description: string; inputSchema?: Record<string, unknown> }>>;
   executeTool?: (name: string, input?: Record<string, unknown>, options?: { signal?: AbortSignal }) => Promise<unknown>;
 };
-
-export type HarnessId = 'legacy' | 'a' | 'b' | 'c';
-export type WireRole = 'signal' | 'power' | 'ground';

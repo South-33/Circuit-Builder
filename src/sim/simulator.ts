@@ -11,8 +11,58 @@ type BoardElement = HTMLElement & {
   ledPower?: boolean;
 };
 
+type ObservableElement = HTMLElement & {
+  value?: unknown;
+  angle?: unknown;
+  hasSignal?: unknown;
+  ledRed?: unknown;
+  ledGreen?: unknown;
+  ledBlue?: unknown;
+  values?: unknown;
+};
+
 function getBoardElement(partId: string): BoardElement | null {
   return document.querySelector(`[data-part-element="${CSS.escape(partId)}"]`) as BoardElement | null;
+}
+
+function getPartElement(partId: string): ObservableElement | null {
+  return document.querySelector(`[data-part-element="${CSS.escape(partId)}"]`) as ObservableElement | null;
+}
+
+function observablePartState(part: ReturnType<typeof circuitStore.getSnapshot>['parts'][number]) {
+  const element = getPartElement(part.id);
+  if (!element) return {};
+  if (part.type === 'wokwi-arduino-uno') {
+    return { led13: Boolean((element as BoardElement).led13), powerLed: Boolean((element as BoardElement).ledPower) };
+  }
+  if (part.type === 'wokwi-led') return { lit: Boolean(element.value) };
+  if (part.type === 'wokwi-rgb-led') {
+    return {
+      red: Number(element.ledRed ?? 0),
+      green: Number(element.ledGreen ?? 0),
+      blue: Number(element.ledBlue ?? 0),
+    };
+  }
+  if (part.type === 'wokwi-servo' || part.type === 'wokwi-stepper-motor') return { angle: Number(element.angle ?? 0) };
+  if (part.type === 'dc-motor') return { direction: element.dataset.motorDirection ?? 'stopped' };
+  if (part.type === 'wokwi-buzzer') return { active: Boolean(element.hasSignal) };
+  if (part.type === 'wokwi-7segment' || part.type === 'wokwi-led-bar-graph') {
+    return { values: Array.isArray(element.values) ? [...element.values] : [] };
+  }
+  if (part.type === 'wokwi-ks2e-m-dc5') return { energized: Boolean(element.value) };
+  return {};
+}
+
+function uniqueObservedValues(samples: Array<Record<string, unknown>>) {
+  const byField = new Map<string, Map<string, unknown>>();
+  for (const sample of samples) {
+    for (const [field, value] of Object.entries(sample)) {
+      const values = byField.get(field) ?? new Map<string, unknown>();
+      values.set(JSON.stringify(value), value);
+      byField.set(field, values);
+    }
+  }
+  return Object.fromEntries([...byField.entries()].map(([field, values]) => [field, [...values.values()]]));
 }
 
 function parseCompileLine(message: string): number | null {
@@ -117,7 +167,11 @@ class SimulatorRuntime {
       runner.start(updateFrame);
       return { status: 'running' as const, compileOutput: compiled.stderr || compiled.stdout };
     } catch (error) {
-      if ((error as Error).name === 'AbortError') throw error;
+      if ((error as Error).name === 'AbortError') {
+        this.stop(false);
+        circuitStore.setSimulation({ status: 'stopped', error: null, compileOutput: '' });
+        throw error;
+      }
       const message = error instanceof Error ? error.message : String(error);
       circuitStore.setSimulation({ status: 'error', error: message, compileOutput: message });
       const line = parseCompileLine(message);
@@ -130,6 +184,63 @@ class SimulatorRuntime {
       }
       throw error;
     }
+  }
+
+  async observe(durationMs = 400, sampleCount = 6, signal?: AbortSignal) {
+    if (!this.runner || circuitStore.getSnapshot().simulation.status !== 'running') {
+      throw new Error('Start the simulation before observing runtime behavior.');
+    }
+    const duration = Math.max(0, Math.min(5000, Math.round(durationMs)));
+    const count = Math.max(1, Math.min(30, Math.round(sampleCount)));
+    const interval = count <= 1 ? 0 : duration / (count - 1);
+    const state = circuitStore.getSnapshot();
+    const observations = new Map<string, Array<Record<string, unknown>>>();
+
+    for (let index = 0; index < count; index++) {
+      if (signal?.aborted) throw new DOMException('Simulation observation cancelled.', 'AbortError');
+      this.devices?.frame();
+      for (const part of state.parts) {
+        const sample = observablePartState(part);
+        if (!Object.keys(sample).length) continue;
+        const list = observations.get(part.id) ?? [];
+        list.push(sample);
+        observations.set(part.id, list);
+      }
+      if (index < count - 1 && interval > 0) {
+        await new Promise<void>((resolve, reject) => {
+          let cancel: (() => void) | null = null;
+          const finish = () => {
+            if (signal && cancel) signal.removeEventListener('abort', cancel);
+            resolve();
+          };
+          const timer = window.setTimeout(finish, interval);
+          if (!signal) return;
+          cancel = () => {
+            window.clearTimeout(timer);
+            reject(new DOMException('Simulation observation cancelled.', 'AbortError'));
+          };
+          signal.addEventListener('abort', cancel, { once: true });
+        });
+      }
+    }
+    this.flushSerial();
+
+    return {
+      status: 'running' as const,
+      durationMs: duration,
+      samples: count,
+      parts: state.parts.flatMap((part) => {
+        const samples = observations.get(part.id);
+        if (!samples?.length) return [];
+        return [{
+          id: part.id,
+          type: part.type,
+          current: samples.at(-1)!,
+          observed: uniqueObservedValues(samples),
+        }];
+      }),
+      serialOutput: circuitStore.getSnapshot().simulation.serialOutput.slice(-2000),
+    };
   }
 
   stop(updateStore = true) {

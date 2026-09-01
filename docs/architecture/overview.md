@@ -1,70 +1,44 @@
 # Architecture
 
-The app has one live circuit document. Human UI actions and WebMCP tools mutate the same `circuitStore`.
+The human UI and WebMCP tools share one live `circuitStore` document.
 
 ```text
-React workbench UI                         WebMCP
-       |                                     |
-       +------------------+------------------+
-                          |
-                     circuitStore
-                          |
-              parts[] + connections[]
-                 |               |
-          exact geometry    wire geometry
-                 |               |
-                 +-------+-------+
-                         |
-                  circuit graph
-                         |
-              AVR8js + devices
+React workbench ─┐
+                 ├─ circuitStore ─ exact part/wire geometry ─ circuit graph ─ AVR + devices
+WebMCP harness ──┘
 ```
+
+`scripts/harness/run.mjs` is a browser-independent shell adapter for agents such as Antigravity. It launches the real app headlessly and calls the same registered tool definitions, so CLI benchmarks cannot drift into a second circuit implementation. Each scenario emits the exact call transcript, final inspection, and PNG render.
 
 ## Ownership
 
-- `src/app/` contains React UI and CSS. It may frame or highlight agent work, but circuit decisions do not belong here.
-- `src/components/` owns canonical part types, metadata, visuals, pins, dimensions, and Wokwi element registration.
-- `src/circuit/` owns document types, store/history, and presets.
-- `src/breadboard/` owns physical breadboard geometry and seating.
-- `src/wires/` owns exact pin locations and rendered wire geometry.
-- `src/sim/` owns graph construction, diagnostics, AVR execution, and device adapters.
-- `src/layout/` owns ordinary human-workspace placement helpers.
-- `src/agent/core/` owns the agent grid, layout evaluation, common parsing, routing, and benchmark/session metrics.
-- `src/agent/profiles/` owns experimental action spaces. Profiles are thin adapters over the same circuit store.
-- `src/agent/webmcp.ts` registers the active profile plus common inspection, code, simulation, focus, and benchmark tools.
-- `scripts/testing/` owns the regression suite and generated AVR fixtures.
-- `scripts/benchmarks/` owns deterministic harness smoke comparisons.
-- `scripts/maintenance/` owns repository hygiene checks.
+- `src/app/`: React UI, camera, selection, and temporary visual marks.
+- `src/components/`: canonical parts, dimensions, pins, properties, and visuals.
+- `src/circuit/`: document types, store/history, and presets.
+- `src/breadboard/`: named-hole geometry and physical seating.
+- `src/wires/`: exact pin and rendered wire geometry. It does not choose agent routes.
+- `src/sim/`: graph, diagnostics, AVR runtime, and device adapters.
+- `src/layout/`: ordinary workspace helpers and independent layout evaluation.
+- `src/agent/`: the single block-grid action space, parsing, transactions, and deterministic routing policy.
 
-## Agent coordinate system
+## Agent geometry
 
-The internal canvas can remain a large pixel world. Agents should not reason in those pixel coordinates.
+Grid `(0,0)` is the workbench center. Positive X is right and positive Y is down. One cell is the 9.6 px physical connector pitch.
 
-- Grid `(0,0)` is the semantic center of the workbench.
-- Positive X is right. Positive Y is down.
-- One agent planning cell is 32 px.
-- Exact pins, breadboard holes, visible workspace dots, and deterministic wire lanes use the separate 9.6 px physical connector pitch.
-- New harness profiles use component **center coordinates**, not top-left coordinates.
-- Every part has an exact rotated grid footprint derived from real rendered geometry.
-- Breadboard-mounted parts should use named physical holes such as `E18` or `+top20` instead of guessed XY coordinates.
+Components reserve rounded-up integer blocks by top-left cell without stretching their canonical visual geometry. The block grid is not wire geometry: the router leaves each exact pin on its physical axis and navigates around exact component rectangles. Breadboard-mounted parts use named holes such as `E18` or `+top20`.
 
-The legacy harness keeps its old top-left `grid` field for compatibility. `inspect-circuit` also returns `centerGrid` so experiments can compare both representations.
+Exact pin axes do not have to share one grid phase. Coarse placement remains integer-cell based, while manual connected-pin snapping and the agent's explicit `align` action may slide a component inside that plan to match one real pin axis exactly. Otherwise the router preserves the phase difference with a full 9.6 px terminal lead and meaningful interior legs, never a tiny adapter notch.
 
-## Wire policy
+Layout quality measures cancelled travel as backtracking. A leftward run followed later by an equally long rightward run is still a visible U-shaped detour even when its net horizontal displacement is zero.
 
-Humans can still author visible bend points. Experimental agent profiles are allowed to use different policies:
+Multi-terminal nets compile to ordinary electrical edges with a retained semantic `netId`. This keeps simulation simple while letting layout quality distinguish one intentional shared terminal lead from an accidental overlap between unrelated wires.
 
-- Harness A and B deliberately leave route geometry to the model.
-- Harness C converts electrical intent into deterministic orthogonal routes.
+The router reserves shared net trunks before ordinary two-terminal signals. This makes the physical routing order match the composition policy: power and ground establish the distribution structure, then local signals fit into the remaining channels.
 
-The deterministic router lives under `src/agent/core/`, not `src/wires/`, because it is an agent-planning policy rather than the rendering model. It routes on the 9.6 px physical lattice while component relationships remain on the coarse 32 px planning grid. Electrical connectivity depends on semantic endpoints, never on the visual route.
+The model chooses topology, coarse component placement/orientation, optional exact pin-axis alignment, and sparse corridor checkpoints. The harness chooses detailed orthogonal routes and can shift an existing lane for a small visual correction. Electrical connectivity always uses semantic endpoints, never the drawn route.
 
-## Camera versus scene
+## Feedback
 
-Scene coordinates and the camera are separate. Agent mutations dispatch `webmcp:frame-circuit`, and the UI frames the resulting content without rewriting scene geometry. This avoids the old failure where a valid circuit existed off-center in the visible viewport.
+`inspect-circuit` is exact machine-readable state. The workbench render is for composition judgment. `focus` adds temporary marks to specific parts, wires, or pins so visual grounding stays sparse.
 
-## Validation
-
-`evaluateLayout()` is an independent geometry check. It catches part overlap, wires through parts, meaningful crossings/overlap, excessive bends, and extreme route stretch. Do not weaken it to make a harness benchmark pass. Fix the action space, placement, or router instead.
-
-Electrical diagnostics are separate from layout quality. A circuit is only complete when the checks relevant to the task have actually been run.
+`evaluateLayout()` independently reports overlap, crossings, backtracking, excessive bends, and routes through components. Electrical diagnostics are separate. Do not weaken either check to improve an experiment score.

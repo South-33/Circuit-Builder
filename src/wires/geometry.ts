@@ -64,11 +64,21 @@ export function partRect(part: CircuitPart): Rect {
   return { x: minX, y: minY, width: maxX - minX, height: maxY - minY };
 }
 
+export function pinIsFlexible(endpoint: string, parts: CircuitPart[]) {
+  const parsed = endpointParts(endpoint);
+  if (!parsed) return false;
+  const part = parts.find((candidate) => candidate.id === parsed.partId);
+  return part
+    ? PART_DEFINITIONS[part.type].flexibleLeadPins?.includes(parsed.pinName) ?? false
+    : false;
+}
+
 export function pinExitDirection(endpoint: string, parts: CircuitPart[]): CardinalDirection | null {
   const parsed = endpointParts(endpoint);
   if (!parsed) return null;
   const part = parts.find((candidate) => candidate.id === parsed.partId);
   if (!part || isBreadboardType(part.type)) return null;
+  if (pinIsFlexible(endpoint, parts)) return null;
   const pin = getPartPins(part).find((candidate) => candidate.name === parsed.pinName);
   if (!pin) return null;
 

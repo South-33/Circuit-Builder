@@ -1,7 +1,6 @@
-import { gridPartPlacement } from '../agent/core/layout';
 import type { CircuitConnection, CircuitPart } from './types';
 
-const placed = (x: number, y: number) => gridPartPlacement({ x, y });
+const placed = (x: number, y: number) => ({ left: 1600 + x * 32, top: 1000 + y * 32 });
 
 export type CircuitPreset = {
   id: string;

@@ -1,163 +1,94 @@
-# Agent harness experiments
+# Agent harness
 
-The app exposes one harness profile per browser tab. Select it with the URL query parameter:
+The app exposes one production WebMCP action space. Its goal is to make circuit construction feel like arranging blocks, not drawing pixels.
 
-| URL | Harness | What the model controls |
-| --- | --- | --- |
-| `/?harness=legacy` | Legacy control | Existing CRUD placement plus manual wire waypoints. |
-| `/?harness=a` | A: Procedural Grid | Ordered MineBench-style place/move/rotate/seat/connect operations. |
-| `/?harness=b` | B: Blueprint Grid | One holistic snapped 2D blueprint with exact centers and exact wire paths. |
-| `/?harness=c` | C: Semantic Solver | Relative placement intent and electrical connections. Geometry and routing are solved deterministically. |
+For an agent environment without an embedded browser, `pnpm harness -- --input <scenario.json>` runs a JSON sequence of these exact tools in headless Chrome or Edge and saves `report.json` plus `render.png`. `pnpm harness:list` prints the live schemas. Keep benchmark scenarios in `scripts/harness/examples/`; generated artifacts belong in ignored `benchmark-results/`.
 
-Aliases such as `?harness=procedural`, `?harness=blueprint`, and `?harness=semantic` also work.
+## Model contract
 
-Only the active mutating action space is registered. This is intentional. An agent should not have to choose between three competing ways to place the same component during one run.
+- One cell is 9.6 px, the physical breadboard-hole pitch.
+- A component is a rounded integer collision shadow placed by its top-left cell. Artwork and cosmetic contours are not planning geometry.
+- The inventory is pin-first: each terminal has an outward side and exact integer `x,y` offset at 10 terminal units per placement cell. The renderer's canonical physical pin remains the source of truth.
+- The compiler creates a straight outward lead on the exact pin axis, then routes orthogonally around exact component rectangles.
+- Directional pin leads and interior route legs are at least one cell long. When a connection should be visually straight, `align` may slide the component by a fractional cell so the two real pin axes match exactly.
+- A two-terminal signal normally specifies only semantic endpoints. An ordinary component terminal is never an invisible junction. Shared power and ground use a real breadboard rail with one source feed and distinct consumer holes.
+- `wire()` means one direct physical cable. With one breadboard present, `net(..., "signal", endpoints)` means the compiler should land up to five endpoints on distinct holes in one connected strip.
+- `rail()` is distribution, not automatic organization. Choose the rail on the same side as its consumers. For a compact switching stage, use adjacent connected strips and explicit short rail drops; do not make one rail branch cross the whole breadboard.
+- `bridge(id, boardId, "+|-", "left|right")` joins split top/bottom rails around one board edge. Choose the quiet edge nearest the supply instead of drawing a vertical wire through the work area.
+- Rail hole labels are not uniform x-coordinates because physical rails contain gaps. Give `rail()` semantic endpoints and let canonical geometry choose the aligned holes instead of guessing numbered holes.
+- Block non-overlap is not enough near active terminals. Keep at least one clear routing cell outside each used pin bank so a nearby component does not close the only clean exit lane.
+- The compiler owns obstacle avoidance, bends, and lane separation.
+- The agent owns topology, terminal-facing orientation, functional group order, and rare meaningful cable corridors.
 
-## Shared tools
+`build-circuit` supports four scales without adding more tools:
 
-Experimental profiles expose a small common surface:
-
-- `inspect-circuit` reads exact state, diagnostics, the ASCII planning map, part `centerGrid`, and active harness metadata.
-- `build-circuit` is the active A/B/C construction tool. Its schema and description change with the selected harness.
-- `set-code` changes the Arduino sketch.
-- `simulate` starts or stops AVR execution.
-- `focus` highlights exact UI items.
-- `benchmark-run` starts or finishes an experiment log.
-
-The legacy control keeps `edit-circuit` and `connect-pins` instead of `build-circuit`.
-
-## Grid representation
-
-The returned ASCII map is exact state feedback, not a second circuit document.
-
-The ASCII map and A/B component coordinates use the coarse 32 px planning grid. Exact pin locations are not rounded to that grid. Breadboard holes and Harness C routes use the 9.6 px physical connector lattice, so a clean route can still attach to the true pin center even when that point falls between planning cells.
-
-```text
- -4 | ..EEEEEEEEEE...AAAAAAAAAAAA...BBBB...
- -3 | ..EEEEEEEEEE...AAAAAAAAAAAA...BBBB...
- -2 | ..EEEEEEEEEE...AAAAAAAAAAAA...BBBB...
- -1 | ..EEEEEEEEEE...AAAAAAAAAAAA...BBBB...
-  0 | ..EEEEEEEEEE...AAAAAAAAAAAA...BBBB...
-  1 | ..EEEEEEEEEE...AAAAAAAAAAAA...BBBB...
-  2 | ..EEEEEEEEEE...AAAAAAAAAAAA...BBBB...
-  3 | ..EEEEEEEEEE...AAAAAAAAAAAA...BBBB...
-  4 | ........***********..................
+```js
+const uno = part("uno", "arduino-uno", {"at":[-35,-12]})
+const board = part("board", "breadboard-half", {"at":[-3,10]})
+const servo = part("servo", "servo", {"at":[33,-4]})
+const pot = part("pot", "potentiometer", {"at":[6,32],"rotate":180})
+align("pot.VCC", "board.+top8", "x")
+wire("pwm", "uno.9", "servo.PWM", "signal")
+net("sense", "signal", ["pot.SIG","uno.A0"])
+rail("power", "board", "+top", "uno.5V", ["pot.VCC","servo.V+"])
+rail("ground", "board", "-top", "uno.GND.2", ["pot.GND","servo.GND"])
 ```
 
-The legend maps each character to a part ID/type. `*` is a wire and `X` is a meaningful crossing. `map.spans` gives exact grid footprints.
+The `program` field accepts this deliberately small declarative language without evaluating JavaScript. Bare calls, `const name =` assignments, dot or colon endpoints, relative placement, breadboard seating, wires, nets, and rails compile through the same transaction and exact router. Declarations may appear anywhere. It is not general JavaScript: use only the listed calls with JSON literals, and never invent object constraints or rely on return values.
 
-Do not make the model paint individual cells as its normal action language. The grid is primarily a compact spatial observation and correction surface.
+- Large change: `replace:true` submits a whole scene.
+- Medium change: `replace:false` moves or adds selected parts/wires and reroutes wires attached to moved parts. A compiler-proposed placement edit includes `reroute:"all"` so its predicted mechanical issue report matches the applied result.
+- Fine placement: `align:[{from,to,axis}]` moves the component named by `from`; `to` stays fixed. Use `x` for a vertical connection and `y` for a horizontal connection. Example: `align:[{"from":"pot:VCC","to":"uno:5V","axis":"x"}]`.
+- Small change: `tune:[{wireId,lane,by}]` shifts the longest horizontal or vertical lane by an integer number of cells.
 
-## Harness A: Procedural Grid
+Use the optional fifth `wire()` argument, such as `[[15,-10],[-16,-10]]`, only when a route needs a meaningful corridor such as the open channel between a battery and breadboard. It is not a full path and does not include pin positions.
 
-Use this to test whether a strong model can do the geometry itself when the API is tiny and regular.
+The build description contains only the starter kit. `inspect-circuit.catalogTypes` progressively reveals exact footprints and canonical pin names grouped by side for other components.
 
-One `build-circuit` call contains ordered operations:
+Placement follows one short composition policy: arrange functional groups by flow, but let pin-side fit win over a conventional left-to-right layout. Treat terminals as the component's important feature. Face each used bank toward its destination, preserve terminal order across a cable boundary, and move or rotate a part whenever that removes a reversal. A breadboard is an electrical region, not empty routing canvas: external cables stay outside and enter at a named hole, strip, or rail. Keep vertical supply boundaries out of horizontal signal spans. Reserve parallel power and ground lanes at group edges and use short local rail drops. When one occupied lane causes a corrective jog, move the complete functional pin group together instead of tuning one wire. Detailed wire geometry remains compiler-owned.
 
-```json
-{
-  "replace": true,
-  "operations": [
-    { "op": "place", "id": "bb", "type": "breadboard-half", "center": { "x": 0, "y": 0 } },
-    { "op": "place", "id": "bat", "type": "battery-9v", "center": { "x": 0, "y": -8 }, "rotate": 90 },
-    { "op": "connect", "from": "bat:+", "to": "bb:+top20", "role": "power", "via": [{ "x": 3, "y": -5 }, { "x": 3, "y": -4 }] }
-  ]
-}
-```
+Before building, reason in this order:
 
-The model owns exact center positions, orientation, and optional orthogonal wire turn points.
+1. Identify the supply source, shared electrical reference, controller, switching stages, and loads. Controllers and externally powered stages need a common ground when one drives the other.
+   Keep topology minimal. A USB-powered controller normally does not also need the external load battery connected to VIN unless the task asks for standalone battery power.
+2. Assign quiet edges for supply entry and rail bridges before placing signal cables. Do not run a supply boundary through the middle of an active board region.
+   Keep conductors from one source connector on the same nearest board edge. A battery below the board feeds both bottom rails; move power locally to the load stage instead of routing one battery lead through the board to a top rail. For unrelated nets, choose top versus bottom by combined source-and-consumer distance.
+3. Assign every multi-terminal peripheral one board-edge zone, then face and align its connector as one cable. Minimize the combined rough distance of every active pin. Do not place a three-wire peripheral near its signal pin alone when that makes its two distribution wires span the scene. If moving the load makes its terminal bank horizontal or vertical with the destination bank, move it instead of routing each conductor around the mismatch.
+4. Seat local components so every rail drop can use the same physical x-axis where possible. Let `rail()` resolve real hole geometry; do not infer coordinates from labels. If a rail gap causes one elbow, compare translating the complete functional group one cell left and right before changing any wire.
+   A `:mount` component must use `seat()` whenever the scene contains a breadboard. Free placement is only valid in a breadboard-free scene.
+   Plan connected strips before choosing seats: A-E holes with the same number are connected, F-J with the same number are connected, and the trench separates them. Put mounted pins that belong to one net on one strip instead of drawing a jumper between them.
+5. Render once and challenge every bend. A bend is valid only for a pin exit, component obstacle, board-edge entry, lane separation, or an intentional functional corridor.
+6. Keep the controller and main distribution board in one working band when their active pin banks permit it. Do not move the whole controller above or below the board merely to repair one wire.
+   Prefer the conventional upright controller to the left of the board. Never rotate a large controller for one signal; rotation must simplify most active connections without worsening power or ground.
 
-## Harness B: Blueprint Grid
+Good and bad shapes:
 
-Use this to test the user's holistic matrix/blueprint idea without forcing cell-by-cell painting.
+- Bad: battery below the board, then one power wire straight through the board interior. Good: enter the nearest lower rail and use one outside-edge `bridge()` to the upper rail.
+- Bad: keep a motor fixed and repair both leads with elbows. Good: move and `align` its terminal bank so both leads stay straight.
+- Bad: select a neighboring rail hole to satisfy artwork-facing direction on a seated part. Good: route from the seated breadboard hole axis and choose the aligned rail hole.
+- Bad: repair one ground elbow while leaving its stage fixed on an incompatible rail phase. Good: translate the transistor, diode, resistor, boundary strips, and load together until their local drops share real rail axes.
+- Bad: remove a shared ground because its visible route is ugly. Good: preserve the required common reference and relocate its physical rail entry.
+- Bad: force every external terminal through the same rigid connector escape. Good: a flexible motor lead turns once on the motor axis and runs directly along the rail axis. A rigid header still preserves its outward side and uses the board boundary when a direct route would cross the board.
+- Bad: place a potentiometer beside A0 while its power and ground cross the workspace. Good: place the whole three-wire bundle beside one distribution edge and accept one clean signal corridor back to A0.
 
-```json
-{
-  "replace": true,
-  "parts": [
-    { "id": "bb", "type": "breadboard-half", "center": { "x": 0, "y": 0 } },
-    { "id": "bat", "type": "battery-9v", "center": { "x": 0, "y": -8 }, "rotate": 90 }
-  ],
-  "connections": [
-    { "from": "bat:+", "to": "bb:+top20", "role": "power", "path": [{ "x": 3, "y": -5 }, { "x": 3, "y": -4 }] }
-  ]
-}
-```
+## Visual feedback
 
-The model submits the whole scene as one coherent spatial object and can replace it on the next pass.
+Exact state and layout diagnostics come from `inspect-circuit`. They catch mechanical violations but do not certify visual quality. The rendered workbench is judged directly: every component location and every bend must have a functional explanation, power pairs should read together, and moving a part must not reveal an obviously simpler route. `focus` can temporarily mark selected parts, wires, and exact endpoints such as `uno:9`; avoid labeling every pin at once.
 
-## Harness C: Semantic Solver
+Before accepting a render, compare moving each external part one coarse cell left, right, up, and down, plus every sensible rotation. Reject the layout when one change removes a reversal, perimeter run, board crossing, or split functional group without causing a worse conflict. In particular, reject a controller moved into a separate row merely to repair one connection, mountable parts floating around a breadboard, a battery occupying the controller-to-board gap, or a flexible load lead with more than one unexplained corner.
 
-Use this to test whether the model should specify relationships while deterministic code handles geometry.
+For a source with multiple conductors, compare the combined rough distance from its terminals to the distribution points at every open board edge. Place it at the shortest clear edge. A battery beneath the controller is wrong when moving it beneath or beside the breadboard shortens both supply wires.
+When a battery is below the breadboard, its terminal bank should normally fall inside the board's horizontal span.
+Preserve connector order across a cable. Project the connector toward its destination and assign the adjacent entry lanes in the same terminal order. If power and ground exchange sides, move or rotate the source or choose different rail-entry lanes; do not route one conductor around the other.
+Connector direction comes first: when a source sits below a board, its rigid terminal bank should face upward. Do not turn it sideways merely to avoid a crossing; slide it along the board edge or choose different entry lanes while keeping the connector aimed at the board.
+Keep that paired cable on one board edge. Enter the two nearest rails together, then use a short local drop or an outside-edge bridge if a consumer needs the far side. Splitting the pair across top and bottom makes one conductor cross the board and destroys the cable's visual flow.
 
-```json
-{
-  "replace": true,
-  "parts": [
-    { "id": "bb", "type": "breadboard-half", "anchor": true },
-    { "id": "uno", "type": "wokwi-arduino-uno", "relative": { "to": "bb", "side": "left", "gap": 3 } },
-    { "id": "bat", "type": "battery-9v", "relative": { "to": "bb", "side": "above", "gap": 2, "portsFace": true }, "rotate": "auto" }
-  ],
-  "connections": [
-    { "from": "bat:+", "to": "bb:+top20", "role": "power" }
-  ]
-}
-```
+## Experiment loop
 
-The harness resolves relative placement, tries right-angle rotations when `portsFace` is requested, avoids component overlap, and autoroutes all requested connections as a group of orthogonal lanes.
+1. Build once from the block contract.
+2. Inspect diagnostics and layout quality.
+3. Look at one framed render and explain every component location and bend. A numeric layout score is never visual acceptance.
+4. Apply a verified `suggestedEdit` when offered. Use `align` for an otherwise-straight endpoint elbow, then one targeted `tune` or `via` only after placement and topology are clean.
+5. Record the result and scale the task only after the smaller case is reliable.
 
-## Logging a real agent run
-
-At the beginning:
-
-```json
-{ "action": "start", "label": "reference-01-model-x-harness-a" }
-```
-
-At the end:
-
-```json
-{ "action": "finish", "notes": "Any short observations about what was difficult or corrected." }
-```
-
-The report includes layout score/issues, electrical diagnostic counts, content center offset, total wire length, bends, tool-call count, failures, traffic, latency, and the call log. `finish` also persists the run in browser localStorage for the same origin and stores it at `window.__webmcp_last_run__` for that tab. The browser keeps the most recent 100 runs.
-
-To inspect recent persisted run summaries from any harness tab on the same origin:
-
-```json
-{ "action": "history" }
-```
-
-Generated local smoke logs from `pnpm benchmark:harnesses` are written under `benchmark-results/` and ignored by git.
-
-## Fair comparison protocol
-
-For a real model comparison:
-
-1. Use the same reference image/task, model, temperature/settings, and system-prompt budget.
-2. Start each run from an empty workbench in a fresh tab with one harness URL.
-3. Give each agent the same evaluation prompt. Do not describe the expected winning strategy.
-4. Run at least five attempts per harness. One lucky render is not enough.
-5. Save the `benchmark-run finish` report and a final screenshot.
-6. Compare deterministic metrics first, then do blind visual preference judging on the final renders.
-7. Test visual-refinement loops only after the best two action spaces are known. Keep the no-visual-feedback condition as a control.
-
-`pnpm benchmark:harnesses` is only an implementation smoke test with fixed known-good inputs. It must not be reported as evidence that one harness is better for LLMs.
-
-## Prompt template for an evaluation agent
-
-Use the same text for each harness, changing only the URL and run label:
-
-```text
-Open the supplied Hardware Lab URL and use only the WebMCP tools registered by that page.
-Start from an empty workbench.
-
-Call benchmark-run with action=start and the supplied run label.
-Rebuild the reference circuit as faithfully as possible. Preserve electrical correctness, the reference's major spatial relationships and orientations, a compact centered composition, and clean readable cable management.
-
-Use the active harness exactly as exposed. Do not switch harnesses, invent unavailable tools, or bypass WebMCP by directly mutating application state. Inspect exact state when useful. You may use the visible rendered result for a small targeted correction, but do not repeatedly tweak without a reason.
-
-Before finishing, inspect the circuit, run any relevant electrical/simulation checks, and correct blocking errors. Then call benchmark-run with action=finish and a short note about any correction you made.
-
-Return the final benchmark report unchanged.
-```
+Electrical correctness and visual quality remain separate. Never treat a clean render as proof that the circuit simulates correctly.

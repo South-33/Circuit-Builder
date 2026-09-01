@@ -1,21 +1,14 @@
-import { PART_DEFINITIONS } from '../../components/parts';
-import type { CircuitConnection, CircuitDocument, CircuitPart, WirePoint } from '../../circuit/types';
-import { endpointParts, endpointPoint, partRect, pinExitDirection, type CardinalDirection } from '../../wires/geometry';
-import { connectionPolyline, isOrthogonalPair, type WireAxis } from '../../wires/path';
-import { BREADBOARD_HOLE_PITCH, isBreadboardType } from '../../breadboard/geometry';
-import { CANVAS_CENTER_X, CANVAS_CENTER_Y } from '../../layout/placement';
+import type { CircuitConnection, CircuitDocument, CircuitPart, WirePoint } from '../circuit/types';
+import { endpointParts, endpointPoint, partRect, pinExitDirection, type CardinalDirection } from '../wires/geometry';
+import { connectionPolyline, isOrthogonalPair, type WireAxis } from '../wires/path';
+import { BREADBOARD_HOLE_PITCH, isBreadboardType } from '../breadboard/geometry';
+import { CANVAS_CENTER_X, CANVAS_CENTER_Y } from './placement';
+import { inferWireKind, wireColorMatchesStandard } from '../wires/conventions';
 
-import { AGENT_GRID_SIZE, canvasPointToGrid, partGridRect, partGridSize } from './grid';
-import { inferWireKind, wireColorMatchesStandard } from './wiring';
-export { AGENT_GRID_SIZE, canvasPointToGrid, gridCenterPlacement, gridPartPlacement, gridPointToCanvas, partCenterGrid, partGridSize } from './grid';
-
-const MAP_MARGIN_CELLS = 2;
-const MAX_MAP_COLUMNS = 72;
-const MAX_MAP_ROWS = 42;
-const SYMBOLS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+const ROUTING_CELL_PX = BREADBOARD_HOLE_PITCH;
 
 type LayoutIssue = {
-  kind: 'part-overlap' | 'wire-through-part' | 'wire-crossing' | 'wire-overlap' | 'diagonal-waypoints' | 'too-many-bends' | 'long-route' | 'pin-exit' | 'wire-backtrack' | 'wire-color';
+  kind: 'part-overlap' | 'pin-fanout' | 'connector-facing-away' | 'wire-through-part' | 'wire-through-board' | 'wire-crossing' | 'wire-overlap' | 'diagonal-waypoints' | 'too-many-bends' | 'long-route' | 'pin-exit' | 'wire-backtrack' | 'wire-notch' | 'wire-color';
   severity: 'warning' | 'error';
   itemIds: string[];
   message: string;
@@ -53,14 +46,25 @@ function backtrackDistance(points: WirePoint[]) {
   if (points.length < 2) return 0;
   const overallDx = points.at(-1)!.x - points[0].x;
   const overallDy = points.at(-1)!.y - points[0].y;
-  let total = 0;
+  let directional = 0;
+  let right = 0;
+  let left = 0;
+  let down = 0;
+  let up = 0;
   for (let i = 0; i < points.length - 1; i++) {
     const dx = points[i + 1].x - points[i].x;
     const dy = points[i + 1].y - points[i].y;
-    if (Math.abs(overallDx) >= AGENT_GRID_SIZE * 3 && Math.sign(dx) && Math.sign(dx) !== Math.sign(overallDx)) total += Math.abs(dx);
-    if (Math.abs(overallDy) >= AGENT_GRID_SIZE * 3 && Math.sign(dy) && Math.sign(dy) !== Math.sign(overallDy)) total += Math.abs(dy);
+    if (dx > 0) right += dx;
+    else left += -dx;
+    if (dy > 0) down += dy;
+    else up += -dy;
+    if (Math.abs(overallDx) >= ROUTING_CELL_PX * 3 && Math.sign(dx) && Math.sign(dx) !== Math.sign(overallDx)) directional += Math.abs(dx);
+    if (Math.abs(overallDy) >= ROUTING_CELL_PX * 3 && Math.sign(dy) && Math.sign(dy) !== Math.sign(overallDy)) directional += Math.abs(dy);
   }
-  return total;
+  // Net displacement alone hides a U-shaped detour because its opposing runs
+  // cancel. Count the distance that cancels itself on either axis as well.
+  const cancelled = Math.min(right, left) + Math.min(down, up);
+  return Math.max(directional, cancelled);
 }
 
 /**
@@ -133,6 +137,19 @@ function bendCount(points: WirePoint[]) {
     previousAxis = axis;
   }
   return bends;
+}
+
+function shortNotch(points: WirePoint[]) {
+  for (let index = 0; index < points.length - 3; index++) {
+    const first = segmentDirection(points[index], points[index + 1]);
+    const jog = segmentDirection(points[index + 1], points[index + 2]);
+    const continued = segmentDirection(points[index + 2], points[index + 3]);
+    if (!first || !jog || !continued || first !== continued || first === jog) continue;
+    const length = Math.abs(points[index + 2].x - points[index + 1].x)
+      + Math.abs(points[index + 2].y - points[index + 1].y);
+    if (length <= ROUTING_CELL_PX * 0.75) return { index, length };
+  }
+  return null;
 }
 
 function intendedOverlap(a: CircuitPart, b: CircuitPart) {
@@ -224,7 +241,7 @@ function intersectionNearSharedPart(first: CircuitConnection, second: CircuitCon
     const part = parts.find((candidate) => candidate.id === id);
     if (!part) continue;
     const rect = partRect(part);
-    const margin = AGENT_GRID_SIZE * 1.1;
+    const margin = ROUTING_CELL_PX * 1.1;
     if (point.x >= rect.x - margin && point.x <= rect.x + rect.width + margin
       && point.y >= rect.y - margin && point.y <= rect.y + rect.height + margin) return true;
   }
@@ -285,6 +302,26 @@ export function evaluateLayout(document: Pick<CircuitDocument, 'parts' | 'connec
   const issues: LayoutIssue[] = [];
   const { parts, connections } = document;
 
+  const endpointUses = new Map<string, string[]>();
+  for (const connection of connections) {
+    for (const endpoint of [connection.from, connection.to]) {
+      const ids = endpointUses.get(endpoint) ?? [];
+      ids.push(connection.id);
+      endpointUses.set(endpoint, ids);
+    }
+  }
+  for (const [endpoint, wireIds] of endpointUses) {
+    if (wireIds.length < 2) continue;
+    const part = endpointPart(endpoint, parts);
+    if (!part || isBreadboardType(part.type) || part.seating) continue;
+    issues.push({
+      kind: 'pin-fanout',
+      severity: 'error',
+      itemIds: [part.id, ...wireIds],
+      message: `${endpoint} has ${wireIds.length} physical wires on one ordinary terminal. Add a breadboard rail or explicit distribution part, then give each consumer its own hole and short branch.`,
+    });
+  }
+
   for (let leftIndex = 0; leftIndex < parts.length; leftIndex++) {
     for (let rightIndex = leftIndex + 1; rightIndex < parts.length; rightIndex++) {
       const first = parts[leftIndex];
@@ -300,19 +337,66 @@ export function evaluateLayout(document: Pick<CircuitDocument, 'parts' | 'connec
     }
   }
 
+  for (const part of parts) {
+    if (part.seating) continue;
+    const activePins = new Map<string, { exit: CardinalDirection; point: WirePoint; targets: WirePoint[]; wireIds: string[] }>();
+    for (const connection of connections) {
+      for (const [endpoint, other] of [[connection.from, connection.to], [connection.to, connection.from]] as const) {
+        if (endpointParts(endpoint)?.partId !== part.id) continue;
+        const exit = pinExitDirection(endpoint, parts);
+        const point = endpointPoint(endpoint, parts);
+        const target = endpointPoint(other, parts);
+        if (!exit || !point || !target) continue;
+        const current = activePins.get(endpoint) ?? { exit, point, targets: [], wireIds: [] };
+        current.targets.push(target);
+        current.wireIds.push(connection.id);
+        activePins.set(endpoint, current);
+      }
+    }
+    if (activePins.size < 2) continue;
+    const pins = [...activePins.values()];
+    const exits = new Set(pins.map((pin) => pin.exit));
+    if (exits.size !== 1) continue;
+    const exit = pins[0].exit;
+    const axis = exit === 'left' ? { x: -1, y: 0 }
+      : exit === 'right' ? { x: 1, y: 0 }
+        : exit === 'up' ? { x: 0, y: -1 }
+          : { x: 0, y: 1 };
+    const projections = pins.flatMap((pin) => pin.targets.map((target) => (
+      (target.x - pin.point.x) * axis.x + (target.y - pin.point.y) * axis.y
+    )));
+    const averageProjection = projections.reduce((sum, value) => sum + value, 0) / projections.length;
+    if (averageProjection >= -ROUTING_CELL_PX * 2) continue;
+    issues.push({
+      kind: 'connector-facing-away',
+      severity: 'warning',
+      itemIds: [part.id, ...new Set(pins.flatMap((pin) => pin.wireIds))],
+      message: `${part.id}'s active connector bank faces ${exit}, but its connected terminals are behind that side. Rotate or move the component so the connector faces its destination before routing.`,
+    });
+  }
+
   for (const connection of connections) {
     const endpointPartIds = new Set([connection.from, connection.to]
       .map((endpoint) => endpointParts(endpoint)?.partId)
       .filter((value): value is string => Boolean(value)));
     const segments = wireSegments(connection, parts);
     for (const part of parts) {
-      if (endpointPartIds.has(part.id) || isBreadboardType(part.type) || part.seating) continue;
+      if (endpointPartIds.has(part.id) || part.seating) continue;
       if (segments.some((segment) => segmentIntersectsRect(segment, partRect(part), 7))) {
+        if (isBreadboardType(part.type)) {
+          issues.push({
+            kind: 'wire-through-board',
+            severity: 'warning',
+            itemIds: [connection.id, part.id],
+            message: `${connection.id} uses ${part.id} as a routing corridor without terminating on it. Keep external cables outside the board and enter only at a named hole or rail.`,
+          });
+          continue;
+        }
         issues.push({
           kind: 'wire-through-part',
           severity: 'error',
           itemIds: [connection.id, part.id],
-          message: `${connection.id} passes through ${part.id}. Move its grid waypoints around the component footprint.`,
+          message: `${connection.id} passes through ${part.id}. Move the component or give the router a meaningful corridor around it.`,
         });
       }
     }
@@ -349,16 +433,25 @@ export function evaluateLayout(document: Pick<CircuitDocument, 'parts' | 'connec
       }
     }
     const routingInterior = routingInteriorPoints(connection, fullPoints, parts);
+    const notch = shortNotch(fullPoints);
+    if (notch) {
+      issues.push({
+        kind: 'wire-notch',
+        severity: 'warning',
+        itemIds: [connection.id],
+        message: `${connection.id} contains a tiny ${Math.round(notch.length * 10) / 10}px sideways notch between parallel runs. Keep one straight axis until the next meaningful bend.`,
+      });
+    }
     const backtrack = backtrackDistance(routingInterior);
     const endpointLeadReversal = doublesBackOverEndpointLead(connection, fullPoints, parts);
-    if (endpointLeadReversal || backtrack >= AGENT_GRID_SIZE * 2.5) {
+    if (endpointLeadReversal || backtrack >= ROUTING_CELL_PX * 0.75) {
       issues.push({
         kind: 'wire-backtrack',
         severity: 'warning',
         itemIds: [connection.id],
         message: endpointLeadReversal
           ? `${connection.id} exits a connector and immediately doubles back over the same lead. Continue away from the pin before turning.`
-          : `${connection.id} reverses about ${Math.round(backtrack / AGENT_GRID_SIZE)} grid cells inside its routing corridor. Prefer a monotonic route unless an obstacle requires the detour.`,
+          : `${connection.id} reverses about ${Math.round(backtrack / ROUTING_CELL_PX)} physical routing cells inside its routing corridor. Prefer a monotonic route unless an obstacle requires the detour.`,
       });
     }
     if (!wireColorMatchesStandard(connection.from, connection.to, connection.color)) {
@@ -409,10 +502,20 @@ export function evaluateLayout(document: Pick<CircuitDocument, 'parts' | 'connec
     for (let secondIndex = firstIndex + 1; secondIndex < connections.length; secondIndex++) {
       const first = connections[firstIndex];
       const second = connections[secondIndex];
+      const sharedNetEndpoint = first.netId && first.netId === second.netId
+        ? [first.from, first.to].find((endpoint) => endpoint === second.from || endpoint === second.to)
+        : undefined;
+      const sharedNetPoint = sharedNetEndpoint ? endpointPoint(sharedNetEndpoint, parts) : undefined;
       let overlap = 0;
       for (const firstSegment of wireSegments(first, parts)) {
         for (const secondSegment of wireSegments(second, parts)) {
-          overlap = Math.max(overlap, parallelOverlapLength(firstSegment, secondSegment));
+          const rawOverlap = parallelOverlapLength(firstSegment, secondSegment);
+          const sharedLeadAllowance = sharedNetPoint
+            && pointOnSegment(sharedNetPoint, firstSegment)
+            && pointOnSegment(sharedNetPoint, secondSegment)
+            ? ROUTING_CELL_PX
+            : 0;
+          overlap = Math.max(overlap, Math.max(0, rawOverlap - sharedLeadAllowance));
         }
       }
       if (overlap >= BREADBOARD_HOLE_PITCH * 1.5) {
@@ -436,20 +539,23 @@ export function evaluateLayout(document: Pick<CircuitDocument, 'parts' | 'connec
         }
       }
       if (!crossing) continue;
-      const cx = Math.round((crossing.x - CANVAS_CENTER_X) / AGENT_GRID_SIZE);
-      const cy = Math.round((crossing.y - CANVAS_CENTER_Y) / AGENT_GRID_SIZE);
+      const cx = Math.round((crossing.x - CANVAS_CENTER_X) / BREADBOARD_HOLE_PITCH);
+      const cy = Math.round((crossing.y - CANVAS_CENTER_Y) / BREADBOARD_HOLE_PITCH);
       issues.push({
         kind: 'wire-crossing',
         severity: 'warning',
         itemIds: [first.id, second.id],
-        message: `${first.id} crosses ${second.id} near grid (${cx}, ${cy}). Separate the routes when practical.`,
+        message: `${first.id} crosses ${second.id} near physical routing cell (${cx}, ${cy}). Separate the routes when practical.`,
       });
     }
   }
 
   const penalties: Record<LayoutIssue['kind'], number> = {
     'part-overlap': 20,
+    'pin-fanout': 20,
+    'connector-facing-away': 6,
     'wire-through-part': 20,   // raised: passing through a part body is never acceptable
+    'wire-through-board': 8,
     'wire-crossing': 10,
     'wire-overlap': 12,
     'diagonal-waypoints': 4,
@@ -457,151 +563,10 @@ export function evaluateLayout(document: Pick<CircuitDocument, 'parts' | 'connec
     'long-route': 3,
     'pin-exit': 3,
     'wire-backtrack': 3,
+    'wire-notch': 5,
     'wire-color': 2,
   };
   const score = Math.max(0, 100 - issues.reduce((sum, issue) => sum + penalties[issue.kind], 0));
   const grade = score >= 92 ? 'excellent' : score >= 80 ? 'good' : score >= 65 ? 'needs-work' : 'poor';
   return { score, grade, issues };
-}
-
-function rasterizeSegment(a: WirePoint, b: WirePoint) {
-  const start = canvasPointToGrid(a);
-  const end = canvasPointToGrid(b);
-  const cells: WirePoint[] = [];
-  let x = start.x;
-  let y = start.y;
-  const dx = Math.abs(end.x - start.x);
-  const sx = start.x < end.x ? 1 : -1;
-  const dy = -Math.abs(end.y - start.y);
-  const sy = start.y < end.y ? 1 : -1;
-  let error = dx + dy;
-  while (true) {
-    cells.push({ x, y });
-    if (x === end.x && y === end.y) break;
-    const twice = 2 * error;
-    if (twice >= dy) { error += dy; x += sx; }
-    if (twice <= dx) { error += dx; y += sy; }
-  }
-  return cells;
-}
-
-export function buildAgentLayout(document: Pick<CircuitDocument, 'parts' | 'connections'>) {
-  const { parts, connections } = document;
-  const allPoints: WirePoint[] = [];
-  for (const part of parts) {
-    const rect = partRect(part);
-    allPoints.push({ x: rect.x, y: rect.y }, { x: rect.x + rect.width, y: rect.y + rect.height });
-  }
-  for (const connection of connections) allPoints.push(...wirePoints(connection, parts));
-
-  // Derive map bounds in CANVAS pixels first, then convert to centered grid coords
-  const minX = allPoints.length ? Math.min(...allPoints.map((point) => point.x)) : CANVAS_CENTER_X - AGENT_GRID_SIZE * 12;
-  const minY = allPoints.length ? Math.min(...allPoints.map((point) => point.y)) : CANVAS_CENTER_Y - AGENT_GRID_SIZE * 8;
-  const maxX = allPoints.length ? Math.max(...allPoints.map((point) => point.x)) : CANVAS_CENTER_X + AGENT_GRID_SIZE * 12;
-  const maxY = allPoints.length ? Math.max(...allPoints.map((point) => point.y)) : CANVAS_CENTER_Y + AGENT_GRID_SIZE * 8;
-
-  // Convert to centered grid coords (no Math.max(0) — negative coords are valid)
-  let gridLeft = Math.floor((minX - CANVAS_CENTER_X) / AGENT_GRID_SIZE) - MAP_MARGIN_CELLS;
-  let gridTop = Math.floor((minY - CANVAS_CENTER_Y) / AGENT_GRID_SIZE) - MAP_MARGIN_CELLS;
-  let gridRight = Math.ceil((maxX - CANVAS_CENTER_X) / AGENT_GRID_SIZE) + MAP_MARGIN_CELLS;
-  let gridBottom = Math.ceil((maxY - CANVAS_CENTER_Y) / AGENT_GRID_SIZE) + MAP_MARGIN_CELLS;
-  if (gridRight - gridLeft > MAX_MAP_COLUMNS) gridRight = gridLeft + MAX_MAP_COLUMNS;
-  if (gridBottom - gridTop > MAX_MAP_ROWS) gridBottom = gridTop + MAX_MAP_ROWS;
-
-  const width = Math.max(1, gridRight - gridLeft + 1);
-  const height = Math.max(1, gridBottom - gridTop + 1);
-  const rows = Array.from({ length: height }, () => Array.from({ length: width }, () => '.'));
-  const legend: Record<string, string> = {};
-  // spans gives agents the exact bounding box for each symbol in the map
-  const spans: Record<string, { id: string; type: string; grid: { x: number; y: number }; gridSize: { w: number; h: number } }> = {};
-
-  parts.forEach((part, index) => {
-    const symbol = SYMBOLS[index] ?? '?';
-    legend[symbol] = `${part.id}:${part.type}`;
-    const rect = partGridRect(part);
-    spans[symbol] = {
-      id: part.id,
-      type: part.type,
-      grid: { x: rect.x, y: rect.y },
-      gridSize: { w: rect.w, h: rect.h },
-    };
-    for (let y = rect.y; y < rect.y + rect.h; y++) {
-      for (let x = rect.x; x < rect.x + rect.w; x++) {
-        const row = y - gridTop;
-        const column = x - gridLeft;
-        if (rows[row]?.[column] !== undefined) rows[row][column] = symbol;
-      }
-    }
-  });
-
-  const wireCells = new Map<string, string>();
-  for (const connection of connections) {
-    const points = wirePoints(connection, parts);
-    for (let index = 0; index < points.length - 1; index++) {
-      for (const cell of rasterizeSegment(points[index], points[index + 1])) {
-        const key = `${cell.x},${cell.y}`;
-        const previous = wireCells.get(key);
-        wireCells.set(key, previous && previous !== connection.id ? 'crossing' : connection.id);
-      }
-    }
-  }
-  for (const [key, owner] of wireCells) {
-    const [x, y] = key.split(',').map(Number);
-    const row = y - gridTop;
-    const column = x - gridLeft;
-    if (rows[row]?.[column] === undefined) continue;
-    if (rows[row][column] === '.') rows[row][column] = owner === 'crossing' ? 'X' : '*';
-  }
-
-  // Build routing hints: find rows and columns that are fully clear of parts
-  const occupiedCols = new Set<number>();
-  const occupiedRows = new Set<number>();
-  for (const part of parts) {
-    const rect = partGridRect(part);
-    for (let y = rect.y; y < rect.y + rect.h; y++) occupiedRows.add(y);
-    for (let x = rect.x; x < rect.x + rect.w; x++) occupiedCols.add(x);
-  }
-  const freeRows: number[] = [];
-  const freeCols: number[] = [];
-  for (let y = gridTop; y <= gridBottom; y++) if (!occupiedRows.has(y)) freeRows.push(y);
-  for (let x = gridLeft; x <= gridRight; x++) if (!occupiedCols.has(x)) freeCols.push(x);
-
-  // Suggest the nearest clear lanes above/below and left/right of the part cluster
-  const clusterMinRow = parts.length ? Math.min(...parts.map((p) => partGridRect(p).y)) : gridTop;
-  const clusterMaxRow = parts.length ? Math.max(...parts.map((p) => { const r = partGridRect(p); return r.y + r.h - 1; })) : gridBottom;
-  const clusterMinCol = parts.length ? Math.min(...parts.map((p) => partGridRect(p).x)) : gridLeft;
-  const clusterMaxCol = parts.length ? Math.max(...parts.map((p) => { const r = partGridRect(p); return r.x + r.w - 1; })) : gridRight;
-
-  const laneAbove = freeRows.filter((r) => r < clusterMinRow).at(-1) ?? null;
-  const laneBelow = freeRows.find((r) => r > clusterMaxRow) ?? null;
-  const laneLeft = freeCols.filter((c) => c < clusterMinCol).at(-1) ?? null;
-  const laneRight = freeCols.find((c) => c > clusterMaxCol) ?? null;
-
-  return {
-    map: {
-      // origin tells agent the top-left corner of this map in centered grid coords
-      origin: { x: gridLeft, y: gridTop },
-      width,
-      height,
-      cols: `     ` + Array.from({ length: width }, (_, i) => ((i + gridLeft) % 5 === 0 ? String(Math.abs((i + gridLeft) % 10)) : ' ')).join(''),
-      rows: rows.map((row, idx) => {
-        const gRow = idx + gridTop;
-        const label = String(gRow).padStart(3, ' ');
-        return `${label} | ${row.join('')}`;
-      }),
-      legend: { ...legend, '*': 'wire', X: 'wire-crossing' },
-      // spans: exact grid bounding box for each part symbol — use this when routing wires around components
-      spans,
-    },
-    routingHints: {
-      // Prefer these clear row/col lanes for horizontal and vertical wire segments
-      clearLaneAbove: laneAbove,
-      clearLaneBelow: laneBelow,
-      clearLaneLeft: laneLeft,
-      clearLaneRight: laneRight,
-      // Tip: route horizontal wire segments along clear rows, vertical segments along clear columns.
-      // Keep one wire per lane. Use gridWaypoints with at most 2 bends per wire.
-    },
-    quality: evaluateLayout(document),
-  };
 }

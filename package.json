@@ -16,10 +16,12 @@
     "typecheck": "tsc --noEmit",
     "test": "node scripts/testing/test-circuits.mjs",
     "test:e2e": "node scripts/testing/test-circuits.mjs",
+    "harness": "node scripts/harness/run.mjs",
+    "harness:list": "node scripts/harness/run.mjs --list",
+    "harness:smoke": "node scripts/harness/run.mjs --input scripts/harness/examples/motor-switch-good.json --out benchmark-results/harness-smoke",
     "check": "pnpm check:repo && pnpm build",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
-    "benchmark:harnesses": "node scripts/benchmarks/harness-comparison.mjs",
     "audit:components": "pnpm audit:grid && node scripts/maintenance/audit-component-render.mjs",
     "audit:examples": "node scripts/maintenance/audit-example-renders.mjs"
   },

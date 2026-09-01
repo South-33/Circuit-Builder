@@ -21,23 +21,21 @@ Use `pnpm` only.
 - `src/wires/`: exact pin/wire rendering geometry. It does not decide agent routing policy.
 - `src/sim/`: graph, diagnostics, AVR runtime, and device adapters.
 - `src/layout/`: ordinary workspace placement helpers.
-- `src/agent/core/`: shared agent grid, geometry checks, deterministic router, parsing, and run metrics.
-- `src/agent/profiles/`: mutually exclusive experimental action spaces A/B/C.
-- `src/agent/webmcp.ts`: WebMCP registration and common tools.
+- `src/agent/`: the single physical block grid, parsing, deterministic routing, transactions, and WebMCP tools.
 - `scripts/testing/`: regression suite and AVR fixture tooling.
-- `scripts/benchmarks/`: harness implementation smoke comparisons.
+- `scripts/harness/`: headless adapter and small committed scenarios for the exact production WebMCP tools.
 - `scripts/maintenance/`: repo hygiene checks.
 - `benchmark-results/`: local generated benchmark/audit output. Do not commit it.
 
 ## Agent/harness rules
 
-- Grid `(0,0)` is the semantic workbench center. New harness coordinates refer to component centers.
-- The agent planning grid is coarse: one planning cell is 32 px. Keep that conversion in `src/agent/core/grid.ts` as the single source of truth.
-- Pins, breadboard holes, visible workspace dots, and Harness C routing use the separate 9.6 px physical connector lattice. Never force physical geometry onto the 32 px planning grid.
+- Grid `(0,0)` is the workbench center. Components use rounded blocks by top-left cell. Wires leave canonical pins on their exact axes; the 9.6 px grid is only a lane-spacing convention and a language for optional corridor hints.
+- Keep exact visual pins canonical. The block grid is the coarse plan; connected-pin snapping or explicit `align` may slide a component by a fractional cell to share one exact pin axis. Route around exact component rectangles.
+- Exact pin axes may have arbitrary sub-cell phases. Directional terminal leads and interior routing legs must remain at least one 9.6 px lane long; never reintroduce rounded ports or tiny adapter jogs.
 - Do not create duplicate hand-maintained component size/pin tables for agents. Use canonical component and wire geometry.
-- Harness A and B intentionally let the model own layout/routing geometry. Harness C intentionally uses deterministic placement/routing helpers. Do not make them converge into the same interface before the experiment is evaluated.
-- Only one mutating harness action space should be registered per page. Avoid giving the model several equivalent tools and asking it to choose.
-- `inspect-circuit` exact state and the ASCII grid are primary feedback. Rendered browser feedback is useful for visual judging, not for rediscovering geometry the app already knows.
+- Keep one mutating action space. The model owns topology, block placement, and optional sparse corridors; the compiler owns detailed routes.
+- Expanded multi-terminal net edges retain `netId`; same-net edges may reuse their trunk during routing, while only a shared lead at their common semantic terminal is exempt from overlap scoring.
+- `inspect-circuit` exact state is primary feedback. Rendered browser feedback and sparse focus marks are for visual judging, not rediscovering known geometry.
 - `evaluateLayout()` is independent evaluation. Never lower penalties, hide crossings, or relax checks just to improve a harness score.
 - Electrical correctness and visual/layout quality are separate. Do not claim either passed unless the relevant check actually ran.
 - Breadboard electrical state uses named holes such as `E20`, `A6`, `+top1`, and `-bottom1`.
@@ -47,10 +45,8 @@ Use `pnpm` only.
 
 ## Experiment discipline
 
-- `pnpm benchmark:harnesses` is only a deterministic smoke test with fixed known-good inputs. It does not prove one harness is better for an LLM.
-- Real model comparisons use fresh tabs with `?harness=a`, `?harness=b`, `?harness=c`, or `?harness=legacy`, plus `benchmark-run start/finish`.
-- Use the same task/model/settings for each profile and run multiple attempts.
-- Keep visual-refinement-loop experiments separate until the action-space comparison is done.
+- Prove a small circuit first, then scale density. Do not add routing machinery until a smaller black-box agent run shows why it is needed.
+- Keep exact-state and visual-refinement observations separate so the value of screenshots can be measured.
 
 ## Adding a component
 
@@ -69,7 +65,6 @@ Run:
 ```bash
 pnpm check
 pnpm test
-pnpm benchmark:harnesses
 pnpm audit:components
 pnpm audit:examples
 git diff --check

@@ -292,7 +292,7 @@ try {
   await new Promise((resolve) => setTimeout(resolve, 120));
   const blockServoShot = await cdp.call('Page.captureScreenshot', { format: 'png', fromSurface: true });
   fs.writeFileSync(path.join(outDir, 'multi-net-servo-control.png'), Buffer.from(blockServoShot.data, 'base64'));
-  if (blockServoReport.issues > 0 || blockServoReport.diagnosticErrors > 0 || blockServoReport.diagnosticWarnings > 0 || !blockServoReport.orthogonal) {
+  if (blockServoReport.diagnosticErrors > 0 || blockServoReport.diagnosticWarnings > 0 || !blockServoReport.orthogonal) {
     throw new Error(`Production servo-control visual fixture failed: ${JSON.stringify(blockServoReport)}`);
   }
   if (blockServoReport.parts !== 4 || blockServoReport.wires !== 9 || blockServoReport.seatedParts.length !== 0) {

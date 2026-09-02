@@ -70,6 +70,7 @@ Good and bad shapes:
 - Bad: remove a shared ground because its visible route is ugly. Good: preserve the required common reference and relocate its physical rail entry.
 - Bad: force every external terminal through the same rigid connector escape. Good: a flexible motor lead turns once on the motor axis and runs directly along the rail axis. A rigid header still preserves its outward side and uses the board boundary when a direct route would cross the board.
 - Bad: place a potentiometer beside A0 while its power and ground cross the workspace. Good: place the whole three-wire bundle beside one distribution edge and accept one clean signal corridor back to A0.
+- Bad: cram 8+ components or a multi-pin display onto a 30-column `breadboard-half`. Good: select full 63-column `breadboard` with 3-sector zoning (Inputs cols 5–20, Displays/ICs cols 28–38, Expansions cols 45–60) and keep seated passives clear of button/IC casings. Collision between seated bodies triggers a blocking `seated-part-collision` compiler error.
 
 ## Visual feedback
 

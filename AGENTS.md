@@ -42,12 +42,12 @@ Use `pnpm` only.
 - Preserve semantic wire endpoints even when visual routes change.
 - Keep `src/app/` free of simulator/device-specific logic.
 - Never mark a component `simulated: true` until its behavior is actually modeled.
+- Dense builds (>=6 seated parts or multi-pin displays) mandate full 63-column `breadboard`; seated body overlaps trigger blocking `seated-part-collision` compiler errors.
 
 ## Experiment discipline
 
 - Prove a small circuit first, then scale density. Do not add routing machinery until a smaller black-box agent run shows why it is needed.
 - Keep exact-state and visual-refinement observations separate so the value of screenshots can be measured.
-
 ## Adding a component
 
 Follow `docs/guides/adding-components.md`. In short, update the canonical type/catalog, register visuals, add real simulator behavior or leave `simulated: false`, add tests, and reuse the same geometry everywhere.

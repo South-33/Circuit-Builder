@@ -261,10 +261,13 @@ function buildVisibilityGraph(anchors: WirePoint[], blocked: Rect[], occupied: O
   }
   const adjacency: GraphEdge[][] = points.map(() => []);
   const connect = (a: number, b: number) => {
+    if (a === b) return false;
     const first = points[a];
     const second = points[b];
     if (!segmentClear(first, second, blocked)) return false;
     const length = Math.abs(first.x - second.x) + Math.abs(first.y - second.y);
+    if (length < EPSILON) return false;
+    if (adjacency[a].some((edge) => edge.to === b)) return true;
     adjacency[a].push({ to: b, length });
     adjacency[b].push({ to: a, length });
     return true;

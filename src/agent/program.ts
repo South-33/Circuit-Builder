@@ -10,7 +10,7 @@ type ProgramPart = {
   seat?: { breadboardId: string; pin: string; hole: string };
 };
 
-type ProgramWire = { id: string; from: string; to: string; role?: string; via?: [number, number][] };
+type ProgramWire = { id: string; from: string; to: string; role?: string; color?: string; via?: [number, number][] };
 type ProgramNet = { id: string; role?: string; endpoints: string[] };
 export type ProgramRail = { id: string; breadboardId: string; rail: string; source: string; consumers: string[] };
 export type ProgramRailBridge = { id: string; breadboardId: string; polarity: '+' | '-'; side: 'left' | 'right' };
@@ -108,7 +108,25 @@ export function parseCircuitProgram(program: string) {
 
   for (const call of calls) {
     const [first, second, third, fourth] = call.args;
-    if (call.name === 'part') continue;
+    if (call.name === 'part') {
+      const [first, , third] = call.args;
+      const options = third && typeof third === 'object' && !Array.isArray(third) ? third as Record<string, unknown> : {};
+      if (options.rightOf) placeRelative(first, options.rightOf, options.gap, options.offset, 'right', call.line);
+      else if (options.leftOf) placeRelative(first, options.leftOf, options.gap, options.offset, 'left', call.line);
+      else if (options.above) placeRelative(first, options.above, options.gap, options.offset, 'above', call.line);
+      else if (options.below) placeRelative(first, options.below, options.gap, options.offset, 'below', call.line);
+      if (options.seat && typeof options.seat === 'object') {
+        const seatOpt = options.seat as Record<string, unknown>;
+        const item = part(first, `program line ${call.line}`);
+        item.at = undefined;
+        item.seat = {
+          breadboardId: requireId(seatOpt.breadboard ?? seatOpt.breadboardId, `program line ${call.line} seat breadboard`),
+          pin: requireString(seatOpt.pin ?? seatOpt.anchorPin, `program line ${call.line} seat pin`),
+          hole: requireString(seatOpt.hole, `program line ${call.line} seat hole`),
+        };
+      }
+      continue;
+    }
     if (call.name === 'place') {
       const item = part(first, `program line ${call.line}`);
       item.at = [integer(second, 'place x'), integer(third, 'place y')];
@@ -130,12 +148,20 @@ export function parseCircuitProgram(program: string) {
       continue;
     }
     if (call.name === 'wire' || call.name === 'connect') {
-      const via = viaPoints(call.args[4], call.line);
+      let via: [number, number][] | undefined;
+      let color: string | undefined;
+      if (Array.isArray(call.args[4])) {
+        via = viaPoints(call.args[4], call.line);
+        if (typeof call.args[5] === 'string') color = call.args[5];
+      } else if (typeof call.args[4] === 'string') {
+        color = call.args[4];
+      }
       wires.push({
         id: requireId(first, `program line ${call.line} wire id`),
         from: endpoint(second, `program line ${call.line} from`),
         to: endpoint(third, `program line ${call.line} to`),
         ...(fourth !== undefined ? { role: requireString(fourth, `program line ${call.line} role`) } : {}),
+        ...(color ? { color } : {}),
         ...(via ? { via } : {}),
       });
       continue;

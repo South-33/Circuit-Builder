@@ -1,4 +1,4 @@
-import { getPartBounds, getPartPins, PART_DEFINITIONS } from '../components/parts';
+import { getPartBounds, getPartPins, PART_DEFINITIONS, resolvePinName } from '../components/parts';
 import { isBreadboardType } from '../breadboard/geometry';
 import type { CircuitPart, WirePoint } from '../circuit/types';
 
@@ -79,7 +79,8 @@ export function pinExitDirection(endpoint: string, parts: CircuitPart[]): Cardin
   const part = parts.find((candidate) => candidate.id === parsed.partId);
   if (!part || isBreadboardType(part.type)) return null;
   if (pinIsFlexible(endpoint, parts)) return null;
-  const pin = getPartPins(part).find((candidate) => candidate.name === parsed.pinName);
+  const resolved = resolvePinName(part, parsed.pinName);
+  const pin = getPartPins(part).find((candidate) => candidate.name === parsed.pinName || (resolved && candidate.name === resolved));
   if (!pin) return null;
 
   const definition = PART_DEFINITIONS[part.type];

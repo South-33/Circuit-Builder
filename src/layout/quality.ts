@@ -8,7 +8,7 @@ import { inferWireKind, wireColorMatchesStandard } from '../wires/conventions';
 const ROUTING_CELL_PX = BREADBOARD_HOLE_PITCH;
 
 type LayoutIssue = {
-  kind: 'part-overlap' | 'pin-fanout' | 'connector-facing-away' | 'wire-through-part' | 'wire-through-board' | 'wire-crossing' | 'wire-overlap' | 'diagonal-waypoints' | 'too-many-bends' | 'long-route' | 'pin-exit' | 'wire-backtrack' | 'wire-notch' | 'wire-color';
+  kind: 'part-overlap' | 'pin-fanout' | 'connector-facing-away' | 'controller-stacked' | 'split-source-cable' | 'excessive-gap' | 'trench-spanning-drop' | 'wire-through-part' | 'wire-through-board' | 'wire-crossing' | 'wire-overlap' | 'diagonal-waypoints' | 'too-many-bends' | 'long-route' | 'pin-exit' | 'wire-backtrack' | 'wire-notch' | 'wire-color' | 'perimeter-rail-detour' | 'same-column-rail-congestion' | 'viewport-overflow' | 'seated-part-collision' | 'board-capacity-recommendation';
   severity: 'warning' | 'error';
   itemIds: string[];
   message: string;
@@ -375,6 +375,213 @@ export function evaluateLayout(document: Pick<CircuitDocument, 'parts' | 'connec
     });
   }
 
+  const uno = parts.find((p) => p.type === 'wokwi-arduino-uno');
+  const board = parts.find((p) => isBreadboardType(p.type));
+  if (uno && board && !uno.seating) {
+    const unoRect = partRect(uno);
+    const boardRect = partRect(board);
+    if (unoRect.y + unoRect.height <= boardRect.y || unoRect.y >= boardRect.y + boardRect.height) {
+      issues.push({
+        kind: 'controller-stacked',
+        severity: 'warning',
+        itemIds: [uno.id, board.id],
+        message: `${uno.id} is placed completely above or below ${board.id}. Keep controller and breadboard in one horizontal working band (conventional upright controller on the left) unless active pin banks require otherwise.`,
+      });
+    }
+
+    if (unoRect.x + unoRect.width <= boardRect.x) {
+      const gap = boardRect.x - (unoRect.x + unoRect.width);
+      if (gap > ROUTING_CELL_PX * 5) {
+        issues.push({
+          kind: 'excessive-gap',
+          severity: 'warning',
+          itemIds: [uno.id, board.id],
+          message: `${uno.id} and ${board.id} have an excessive ${Math.round(gap / ROUTING_CELL_PX)}-cell gap. Keep the gap snug (1-3 cells, e.g. rightOf("${board.id}", "${uno.id}", 2)) to avoid sprawling wires.`,
+        });
+      }
+    }
+  }
+
+  if (board) {
+    const boardRect = partRect(board);
+    for (const part of parts) {
+      if (part.seating || isBreadboardType(part.type) || part.id === uno?.id) continue;
+      const rect = partRect(part);
+      const dx = Math.max(0, boardRect.x - (rect.x + rect.width), rect.x - (boardRect.x + boardRect.width));
+      const dy = Math.max(0, boardRect.y - (rect.y + rect.height), rect.y - (boardRect.y + boardRect.height));
+      const gapCells = Math.round(Math.max(dx, dy) / ROUTING_CELL_PX);
+      if (gapCells > 8) {
+        issues.push({
+          kind: 'excessive-gap',
+          severity: 'warning',
+          itemIds: [part.id, board.id],
+          message: `${part.id} is placed ${gapCells} cells away from ${board.id}. Move it snug against the board edge it connects to (gap 1-3 cells) to eliminate sprawling wires.`,
+        });
+      }
+    }
+  }
+
+  for (const part of parts) {
+    if (!part.type.includes('battery')) continue;
+    const partConns = connections.filter((c) => {
+      const p1 = endpointParts(c.from)?.partId;
+      const p2 = endpointParts(c.to)?.partId;
+      return p1 === part.id || p2 === part.id;
+    });
+    if (partConns.length < 2) continue;
+    const otherEndpoints = partConns.map((c) => {
+      const p1 = endpointParts(c.from)?.partId;
+      return p1 === part.id ? c.to : c.from;
+    });
+    const hasTopRail = otherEndpoints.some((ep) => ep.includes(':+top') || ep.includes(':-top'));
+    const hasBottomRail = otherEndpoints.some((ep) => ep.includes(':+bottom') || ep.includes(':-bottom'));
+    if (hasTopRail && hasBottomRail) {
+      issues.push({
+        kind: 'split-source-cable',
+        severity: 'warning',
+        itemIds: [part.id, ...partConns.map((c) => c.id)],
+        message: `${part.id} has one terminal on a top rail and another on a bottom rail. Connect both conductors to the same nearest rail pair (+bottom/-bottom or +top/-top) so the supply cable stays bundled together. Use a quiet-edge bridge if the opposite rail needs power.`,
+      });
+    }
+  }
+
+  for (const connection of connections) {
+    for (const [rowEp, railEp] of [[connection.from, connection.to], [connection.to, connection.from]] as const) {
+      const rowParsed = endpointParts(rowEp);
+      const railParsed = endpointParts(railEp);
+      if (!rowParsed || !railParsed) continue;
+      if (rowParsed.partId !== railParsed.partId) continue;
+      const b = parts.find((p) => p.id === rowParsed.partId && isBreadboardType(p.type));
+      if (!b) continue;
+      const isTopRail = railParsed.pinName.startsWith('+top') || railParsed.pinName.startsWith('-top');
+      const isBottomRail = railParsed.pinName.startsWith('+bottom') || railParsed.pinName.startsWith('-bottom');
+      if (!isTopRail && !isBottomRail) continue;
+      const rowLetter = rowParsed.pinName.charAt(0).toUpperCase();
+      if (['A', 'B', 'C', 'D', 'E'].includes(rowLetter) && isBottomRail) {
+        issues.push({
+          kind: 'trench-spanning-drop',
+          severity: 'warning',
+          itemIds: [connection.id, b.id],
+          message: `${connection.id} connects row ${rowLetter} to ${railParsed.pinName} across the center divider. Use the near rail (+top/-top for rows A-E) or seat the part in rows F-J to keep rail drops short.`,
+        });
+      } else if (['F', 'G', 'H', 'I', 'J'].includes(rowLetter) && isTopRail) {
+        issues.push({
+          kind: 'trench-spanning-drop',
+          severity: 'warning',
+          itemIds: [connection.id, b.id],
+          message: `${connection.id} connects row ${rowLetter} to ${railParsed.pinName} across the center divider. Use the near rail (+bottom/-bottom for rows F-J) or seat the part in rows A-E to keep rail drops short.`,
+        });
+      }
+    }
+  }
+
+  if (board) {
+    const boardRect = partRect(board);
+    for (const connection of connections) {
+      for (const [partEp, railEp] of [[connection.from, connection.to], [connection.to, connection.from]] as const) {
+        const partParsed = endpointParts(partEp);
+        const railParsed = endpointParts(railEp);
+        if (!partParsed || !railParsed) continue;
+        if (partParsed.partId === board.id || railParsed.partId !== board.id) continue;
+        const targetPart = parts.find((p) => p.id === partParsed.partId);
+        if (!targetPart || targetPart.seating || isBreadboardType(targetPart.type)) continue;
+        const targetRect = partRect(targetPart);
+        const isTopRail = railParsed.pinName.startsWith('+top') || railParsed.pinName.startsWith('-top');
+        const isBottomRail = railParsed.pinName.startsWith('+bottom') || railParsed.pinName.startsWith('-bottom');
+        if (targetRect.y + targetRect.height <= boardRect.y && isBottomRail) {
+          issues.push({
+            kind: 'perimeter-rail-detour',
+            severity: 'warning',
+            itemIds: [connection.id, targetPart.id, board.id],
+            message: `${targetPart.id} is situated above ${board.id} but connects to ${railParsed.pinName}. Draw power from the near rail (+top/-top) or top header to avoid an outer perimeter detour.`,
+          });
+        } else if (targetRect.y >= boardRect.y + boardRect.height && isTopRail) {
+          issues.push({
+            kind: 'perimeter-rail-detour',
+            severity: 'warning',
+            itemIds: [connection.id, targetPart.id, board.id],
+            message: `${targetPart.id} is situated below ${board.id} but connects to ${railParsed.pinName}. Draw power from the near rail (+bottom/-bottom) to avoid an outer perimeter detour.`,
+          });
+        }
+      }
+    }
+
+    const railColumns: Record<string, string[]> = {};
+    for (const connection of connections) {
+      for (const ep of [connection.from, connection.to]) {
+        const parsed = endpointParts(ep);
+        if (!parsed || parsed.partId !== board.id) continue;
+        const match = parsed.pinName.match(/^([+-])(top|bottom)(\d+)$/);
+        if (match) {
+          const bank = match[2];
+          const col = match[3];
+          const key = `${board.id}:${bank}:${col}`;
+          railColumns[key] = (railColumns[key] ?? []).concat(connection.id);
+        }
+      }
+    }
+    for (const [key, conns] of Object.entries(railColumns)) {
+      const uniqueConns = Array.from(new Set(conns));
+      if (uniqueConns.length >= 2) {
+        const [, bank, col] = key.split(':');
+        issues.push({
+          kind: 'same-column-rail-congestion',
+          severity: 'warning',
+          itemIds: uniqueConns,
+          message: `${uniqueConns.join(' and ')} both enter ${bank} rail column ${col}. Offset entry columns (e.g. +${bank}${col} and -${bank}${Number(col) + 1}, or use rail()) so leads have separate parallel lanes.`,
+        });
+      }
+    }
+    const seatedOnBoard = parts.filter((p) => p.seating?.breadboardId === board.id);
+    for (let i = 0; i < seatedOnBoard.length; i++) {
+      const a = seatedOnBoard[i];
+      const aRect = partRect(a);
+      for (let j = i + 1; j < seatedOnBoard.length; j++) {
+        const b = seatedOnBoard[j];
+        const bRect = partRect(b);
+        if (aRect.x < bRect.x + bRect.width - 4
+          && aRect.x + aRect.width > bRect.x + 4
+          && aRect.y < bRect.y + bRect.height - 4
+          && aRect.y + aRect.height > bRect.y + 4) {
+          issues.push({
+            kind: 'seated-part-collision',
+            severity: 'warning',
+            itemIds: [a.id, b.id, board.id],
+            message: `${a.id} overlaps ${b.id} on ${board.id}. Offset their seated positions by at least 2 columns to give each part clear physical clearance.`,
+          });
+        }
+      }
+    }
+    if (board.type === 'breadboard-half' && seatedOnBoard.length >= 8) {
+      issues.push({
+        kind: 'board-capacity-recommendation',
+        severity: 'warning',
+        itemIds: [board.id],
+        message: `${board.id} has ${seatedOnBoard.length} seated components. For circuits with 8+ seated components or multi-pin displays plus user inputs, upgrade to 'breadboard' (full 63-column) to keep routing spacious and uncrowded.`,
+      });
+    }
+  }
+
+  if (parts.length >= 2) {
+    const unseated = parts.filter((p) => !p.seating);
+    if (unseated.length >= 2) {
+      const xs = unseated.map((p) => partRect(p).x);
+      const xMaxs = unseated.map((p) => partRect(p).x + partRect(p).width);
+      const ys = unseated.map((p) => partRect(p).y);
+      const yMaxs = unseated.map((p) => partRect(p).y + partRect(p).height);
+      const spanX = Math.round((Math.max(...xMaxs) - Math.min(...xs)) / ROUTING_CELL_PX);
+      const spanY = Math.round((Math.max(...yMaxs) - Math.min(...ys)) / ROUTING_CELL_PX);
+      if (spanX > 85 || spanY > 60) {
+        issues.push({
+          kind: 'viewport-overflow',
+          severity: 'warning',
+          itemIds: unseated.map((p) => p.id),
+          message: `The overall circuit span (${spanX} horizontal cells × ${spanY} vertical cells) exceeds the comfortable 2D working area. Stack wide displays above the breadboard with above() to keep the layout compact.`,
+        });
+      }
+    }
+  }
+
   for (const connection of connections) {
     const endpointPartIds = new Set([connection.from, connection.to]
       .map((endpoint) => endpointParts(endpoint)?.partId)
@@ -554,6 +761,15 @@ export function evaluateLayout(document: Pick<CircuitDocument, 'parts' | 'connec
     'part-overlap': 20,
     'pin-fanout': 20,
     'connector-facing-away': 6,
+    'controller-stacked': 12,
+    'split-source-cable': 12,
+    'excessive-gap': 8,
+    'trench-spanning-drop': 8,
+    'perimeter-rail-detour': 10,
+    'same-column-rail-congestion': 6,
+    'viewport-overflow': 12,
+    'seated-part-collision': 15,
+    'board-capacity-recommendation': 6,
     'wire-through-part': 20,   // raised: passing through a part body is never acceptable
     'wire-through-board': 8,
     'wire-crossing': 10,

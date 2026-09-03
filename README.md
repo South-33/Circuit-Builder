@@ -1,49 +1,36 @@
 # Circuit Builder
 
-A browser electronics workbench built for WebMCP. People and agents work on the same live circuit, with real component geometry, breadboards, wiring, Arduino code, diagnostics, and simulation.
+A WebMCP electronics workbench where a person and an agent edit the same live circuit. Build with real component geometry, breadboards, Arduino code, diagnostics, and simulation.
 
-## WebMCP
+## Why WebMCP
 
-There is one production construction tool: `build-circuit`.
+The browser exposes one production construction tool, `build-circuit`. The agent describes topology and functional intent. Deterministic code turns that intent into valid breadboard seats, power rails, junctions, orthogonal wiring, diagnostics, and a runnable simulation.
 
-The agent describes topology and high-level intent with semantic JavaScript. Deterministic code owns exact breadboard holes, rails, junctions, clearance, orthogonal routing, diagnostics, and simulation. Supporting tools inspect the circuit, update code, focus the workbench, and run simulation.
+Supporting tools let the agent inspect exact circuit state, update Arduino code, focus parts or pins, and observe simulation results. The WebMCP registration is in [`src/agent/webmcp.ts`](./src/agent/webmcp.ts).
 
-The normal agent loop is:
+Typical loop: `Plan -> Build -> inspect -> revise -> Verify`.
 
-`Plan -> Build -> inspect -> revise intent -> Verify`
-
-The semantic API includes `part`, `connect`, `net`, `power`, `ground`, `stage`, `flow`, `code`, `near`, `rotate`, and `mount`. Exact placement and seating exist only as escape hatches.
-
-## Run locally
+## Run
 
 ```bash
 pnpm install
 pnpm dev
 ```
 
-Open `http://localhost:5173/`.
+Open `http://localhost:5173/` in a WebMCP-enabled browser. Ask the agent to build a circuit, then inspect the shared workbench while it builds, programs, and simulates it.
 
-## Harness
-
-```bash
-pnpm harness:list
-pnpm harness:smoke
-pnpm harness --input scripts/harness/examples/ir-motor-hard.json --out benchmark-results/demo-motor
-```
-
-Generated renders and reports are written to ignored `benchmark-results/`.
-
-## Validate
+## Verify
 
 ```bash
 pnpm check
 pnpm test
-pnpm audit:components
-pnpm audit:examples
+pnpm harness:smoke
 ```
 
-The catalog currently contains 50 components. The MCU runtime targets one Arduino Uno per simulation.
+Optional deeper audits: `pnpm audit:components` and `pnpm audit:examples`.
+
+The project currently includes 50 components and Arduino Uno simulation.
 
 ## License
 
-MIT. Third-party attributions are in [`THIRD_PARTY_NOTICES.md`](./THIRD_PARTY_NOTICES.md) and `public/assets/fritzing/ATTRIBUTION.md`.
+MIT. See [`THIRD_PARTY_NOTICES.md`](./THIRD_PARTY_NOTICES.md) and `public/assets/fritzing/ATTRIBUTION.md` for third-party attribution.

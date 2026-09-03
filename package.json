@@ -1,14 +1,17 @@
 {
-  "name": "webmcp-hardware-lab",
+  "name": "circuit-builder",
   "private": true,
   "version": "0.1.0",
+  "description": "WebMCP electronics workbench with semantic circuit construction and Arduino simulation.",
+  "license": "MIT",
+  "repository": "https://github.com/South-33/Circuit-Builder",
   "packageManager": "pnpm@10.26.2",
+  "type": "module",
   "pnpm": {
     "onlyBuiltDependencies": [
       "esbuild"
     ]
   },
-  "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",

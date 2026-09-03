@@ -8,6 +8,25 @@ export const WIRE_COLORS = {
   signal: '#2f9e44',
 } as const;
 
+const SIGNAL_PALETTE = [
+  '#2f9e44',
+  '#1971c2',
+  '#7b2cbf',
+  '#0b7285',
+  '#5f3dc4',
+  '#087f5b',
+] as const;
+
+/** Stable signal color without asking the model to choose presentation details. */
+export function signalWireColor(identity: string) {
+  let hash = 2166136261;
+  for (const char of identity) {
+    hash ^= char.charCodeAt(0);
+    hash = Math.imul(hash, 16777619);
+  }
+  return SIGNAL_PALETTE[(hash >>> 0) % SIGNAL_PALETTE.length];
+}
+
 function endpointPin(endpoint: string) {
   const colon = endpoint.indexOf(':');
   return (colon >= 0 ? endpoint.slice(colon + 1) : endpoint).trim().toLowerCase();
@@ -54,13 +73,15 @@ export const WIRING_GUIDE = {
     positive5V: 'red',
     positive3V3: 'orange',
     negativeSupply: 'blue',
-    signalDefault: 'green',
+    signalDefault: 'stable per-net palette',
   },
   routing: [
     'Arrange functional groups in signal or energy-flow order, but let pin-side fit outrank a conventional left-to-right layout.',
     'Place parts where the source outward ray and destination inward ray can meet with at most one main bend; leave approach space for every pin in the bank.',
     'Choose an open wiring channel first. Align connected pin banks along it, then rotate or slide parts to remove any avoidable direction reversal.',
     'Reserve separate parallel distribution lanes for shared power and ground at the edge of a functional group; place consumers for short local drops.',
+    'Connect a point-to-point signal to the actual component pin; target a breadboard hole only when its connected strip intentionally joins multiple endpoints.',
+    'For a local multi-drop node, make the external cable visibly terminate at the primary active-device pin and co-locate passive branches on its connected strip.',
     'Leave an open channel between connected pin banks. The exact router owns pin exits, bends, and lane separation.',
   ],
 } as const;

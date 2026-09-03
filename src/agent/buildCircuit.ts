@@ -1,9 +1,9 @@
 import { circuitStore } from '../circuit/store';
-import { getBreadboardGeometry, isBreadboardType } from '../breadboard/geometry';
+import { BREADBOARD_HOLE_PITCH, breadboardHoleNet, getBreadboardGeometry, isBreadboardType } from '../breadboard/geometry';
 import type { CircuitConnection, CircuitPart, PartAttrs, PartType, WirePoint } from '../circuit/types';
 import { evaluateLayout } from '../layout/quality';
-import { standardWireColor, type WireRole } from '../wires/conventions';
-import { endpointParts, endpointPoint, pinExitDirection, pinIsFlexible, type CardinalDirection } from '../wires/geometry';
+import { inferWireKind, signalWireColor, standardWireColor, type WireRole } from '../wires/conventions';
+import { endpointParts, endpointPoint, partRect, pinExitDirection, pinIsFlexible, type CardinalDirection } from '../wires/geometry';
 import { simplifyWirePoints } from '../wires/path';
 import {
   BLOCK_CELL_PX,
@@ -51,6 +51,8 @@ type BlockWire = {
   color?: string;
   via?: BlockCell[];
   viaPx?: WirePoint[];
+  /** Compiler-owned: a local bus tap may enter its already-selected nearby strip directly. */
+  directBoardEntry?: boolean;
 };
 
 type BlockNet = {
@@ -155,7 +157,15 @@ function parseNet(raw: unknown, index: number): BlockNet {
  * look like hidden distribution junctions. Other buses remain spatial chains
  * until they gain a more specific physicalizer.
  */
-function expandNet(net: BlockNet, parts: CircuitPart[]): BlockWire[] {
+function expandNet(
+  net: BlockNet,
+  parts: CircuitPart[],
+  reservedSignalJunctionColumns = new Map<string, Set<number>>(),
+  signalJunctionBundles = new Map<string, {
+    half: 'upper' | 'lower';
+    columnsByPartId: Map<string, number>;
+  }>(),
+): BlockWire[] {
   const endpoints = Array.from(new Set(net.endpoints.map((endpoint) => canonicalEndpoint(endpoint, parts))));
   if (endpoints.length < 2) throw new Error(`Net ${net.id} needs at least two distinct terminals.`);
   if (net.role === 'power' || net.role === 'ground') {
@@ -170,6 +180,178 @@ function expandNet(net: BlockNet, parts: CircuitPart[]): BlockWire[] {
   }
   const boards = parts.filter((part) => isBreadboardType(part.type));
   const endpointPartIds = endpoints.map((endpoint) => endpointPartId(endpoint));
+  const rootParsed = endpointParts(endpoints[0]);
+  const rootPart = parts.find((part) => part.id === rootParsed?.partId);
+  if (net.role === 'signal' && endpoints.length >= 4 && endpoints.length <= 5 && boards.length === 1
+    && endpointPartIds.every((id) => id !== boards[0].id)) {
+    const board = boards[0];
+    const geometry = getBreadboardGeometry(board.type)!;
+    const located = endpoints.map((endpoint) => {
+      const parsed = endpointParts(endpoint)!;
+      const part = parts.find((candidate) => candidate.id === parsed.partId)!;
+      const point = endpointPoint(endpoint, parts);
+      if (!point) throw new Error(`Cannot resolve exact pin geometry for ${endpoint}.`);
+      const seatedHole = part.seating?.breadboardId === board.id ? part.seating.pins[parsed.pinName] : undefined;
+      return { endpoint, partId: parsed.partId, point, seatedHole };
+    });
+    const boardCenterY = board.top + geometry.height / 2;
+    const seatedHalves = located.flatMap((item) => item.seatedHole
+      ? [(['A', 'B', 'C', 'D', 'E'].includes(item.seatedHole[0].toUpperCase()) ? 'upper' : 'lower') as 'upper' | 'lower']
+      : []);
+    const averageY = located.reduce((sum, item) => sum + item.point.y, 0) / located.length;
+    const bundleKey = `${board.id}|${Array.from(new Set(endpointPartIds)).sort().join(',')}`;
+    const existingBundle = signalJunctionBundles.get(bundleKey);
+    const upperVotes = seatedHalves.filter((value) => value === 'upper').length;
+    const lowerVotes = seatedHalves.length - upperVotes;
+    const half: 'upper' | 'lower' = existingBundle?.half
+      ?? (upperVotes !== lowerVotes ? (upperVotes > lowerVotes ? 'upper' : 'lower') : (averageY < boardCenterY ? 'upper' : 'lower'));
+    const rows = half === 'upper' ? ['A', 'B', 'C', 'D', 'E'] : ['F', 'G', 'H', 'I', 'J'];
+    const rowPreference = [rows[2], rows[1], rows[3], rows[0], rows[4]];
+    const occupiedHoles = new Set<string>();
+    for (const part of parts) {
+      if (part.seating?.breadboardId !== board.id) continue;
+      for (const hole of Object.values(part.seating.pins)) occupiedHoles.add(hole);
+    }
+    const reserved = reservedSignalJunctionColumns.get(board.id) ?? new Set<number>();
+    reservedSignalJunctionColumns.set(board.id, reserved);
+    const bundle = existingBundle ?? { half, columnsByPartId: new Map<string, number>() };
+    if (!existingBundle) signalJunctionBundles.set(bundleKey, bundle);
+
+    const columnPointX = (column: number) => endpointPoint(`${board.id}:${rows[2]}${column}`, parts)?.x ?? 0;
+    const junctionHoleClear = (hole: string) => {
+      if (occupiedHoles.has(hole)) return false;
+      const point = endpointPoint(`${board.id}:${hole}`, parts);
+      if (!point) return false;
+      // These strips are entry anchors for wires arriving from external parts.
+      // The exact router gives every unrelated component about half a physical
+      // pitch of visual clearance, so the semantic allocator must reserve the
+      // same space. Otherwise it can choose a perfectly empty hole beside a
+      // mounted LED/module that the router is then forced to reject.
+      const externalEntryClearance = BREADBOARD_HOLE_PITCH * 0.55;
+      return !parts.some((part) => {
+        if (part.seating?.breadboardId !== board.id) return false;
+        const rect = partRect(part);
+        return point.x >= rect.x - externalEntryClearance && point.x <= rect.x + rect.width + externalEntryClearance
+          && point.y >= rect.y - externalEntryClearance && point.y <= rect.y + rect.height + externalEntryClearance;
+      });
+    };
+    const columnFree = (column: number) => column >= 1 && column <= geometry.columns
+      && !reserved.has(column)
+      && rows.every((row) => junctionHoleClear(`${row}${column}`));
+    const chooseColumn = (item: typeof located[number]) => {
+      const paired = existingBundle?.columnsByPartId.get(item.partId);
+      const itemPart = parts.find((candidate) => candidate.id === item.partId);
+      const boardRect = partRect(board);
+      const itemRect = itemPart ? partRect(itemPart) : undefined;
+      // Keep a small connector bank free at a breadboard's left/right edge for
+      // supply and return feeds. Shared buses from a controller beside the board
+      // otherwise grab columns 1/2, while power/ground must land just outside
+      // them, reversing the source-pin order and creating unavoidable crossings.
+      // Above/below modules and seated parts do not consume this side ingress.
+      const edgeIngressColumns = Math.min(5, Math.max(2, Math.floor(geometry.columns / 6)));
+      const minimumColumn = itemRect && itemRect.x + itemRect.width <= boardRect.x ? edgeIngressColumns + 1 : 1;
+      const maximumColumn = itemRect && itemRect.x >= boardRect.x + boardRect.width
+        ? geometry.columns - edgeIngressColumns
+        : geometry.columns;
+      const candidates = Array.from({ length: geometry.columns }, (_, index) => index + 1)
+        .filter((column) => column >= minimumColumn && column <= maximumColumn)
+        .filter(columnFree)
+        .sort((a, b) => {
+          const pairedCostA = paired === undefined ? 0 : Math.abs(a - paired) * BREADBOARD_HOLE_PITCH * 100;
+          const pairedCostB = paired === undefined ? 0 : Math.abs(b - paired) * BREADBOARD_HOLE_PITCH * 100;
+          return pairedCostA + Math.abs(columnPointX(a) - item.point.x)
+            - pairedCostB - Math.abs(columnPointX(b) - item.point.x);
+        });
+      const column = candidates[0];
+      if (!column) throw new Error(`Net ${net.id} could not allocate a local breadboard junction near ${item.endpoint}.`);
+      reserved.add(column);
+      return column;
+    };
+
+    const junctions = located.map((item) => {
+      const column = chooseColumn(item);
+      if (!existingBundle) bundle.columnsByPartId.set(item.partId, column);
+      const usedRows = new Set<string>();
+      return { ...item, column, usedRows };
+    }).sort((a, b) => columnPointX(a.column) - columnPointX(b.column) || a.point.y - b.point.y);
+
+    const wires: BlockWire[] = [];
+    const holeAvailable = (junction: typeof junctions[number], row: string) => (
+      !junction.usedRows.has(row) && !occupiedHoles.has(`${row}${junction.column}`)
+    );
+    const takeRow = (junction: typeof junctions[number], preferred = rowPreference) => {
+      const row = preferred.find((candidate) => holeAvailable(junction, candidate));
+      if (!row) throw new Error(`Net ${net.id} needs another free hole on strip ${junction.column}.`);
+      junction.usedRows.add(row);
+      return row;
+    };
+
+    // Give every device a short tap into a fully exposed local strip. Even a
+    // seated module gets a nearby breakout strip rather than using spare holes
+    // hidden underneath its body as trunk anchors.
+    for (const [index, junction] of junctions.entries()) {
+      const tapRows = [...rows].sort((a, b) => {
+        const ay = endpointPoint(`${board.id}:${a}${junction.column}`, parts)?.y ?? junction.point.y;
+        const by = endpointPoint(`${board.id}:${b}${junction.column}`, parts)?.y ?? junction.point.y;
+        return Math.abs(ay - junction.point.y) - Math.abs(by - junction.point.y);
+      });
+      const row = takeRow(junction, tapRows);
+      wires.push({
+        id: `${net.id}-tap-${index + 1}`,
+        netId: net.id,
+        from: junction.endpoint,
+        to: `${board.id}:${row}${junction.column}`,
+        role: net.role,
+        directBoardEntry: true,
+        ...(net.color ? { color: net.color } : {}),
+      });
+    }
+
+    // Link the local strips in physical x order. Each segment uses the same row
+    // at both ends when possible, producing a visible horizontal backbone. At a
+    // middle strip the next segment uses another hole on the same connected
+    // strip, so no physical hole has two wires inserted into it.
+    for (let index = 0; index < junctions.length - 1; index++) {
+      const left = junctions[index];
+      const right = junctions[index + 1];
+      const commonRow = rowPreference.find((row) => holeAvailable(left, row) && holeAvailable(right, row));
+      const leftRow = commonRow ?? takeRow(left);
+      const rightRow = commonRow ?? takeRow(right);
+      if (commonRow) {
+        left.usedRows.add(commonRow);
+        right.usedRows.add(commonRow);
+      }
+      wires.push({
+        id: `${net.id}-trunk-${index + 1}`,
+        netId: net.id,
+        from: `${board.id}:${leftRow}${left.column}`,
+        to: `${board.id}:${rightRow}${right.column}`,
+        role: net.role,
+        ...(net.color ? { color: net.color } : {}),
+      });
+    }
+    return wires;
+  }
+  if (net.role === 'signal' && boards.length === 1
+    && rootPart?.seating?.breadboardId === boards[0].id && rootParsed) {
+    const rootHole = rootPart.seating.pins[rootParsed.pinName];
+    return endpoints.slice(1).flatMap((endpoint, index): BlockWire[] => {
+      const parsed = endpointParts(endpoint);
+      const part = parts.find((candidate) => candidate.id === parsed?.partId);
+      const hole = part?.seating?.breadboardId === boards[0].id && parsed
+        ? part.seating.pins[parsed.pinName]
+        : undefined;
+      if (rootHole && hole && breadboardHoleNet(rootHole) === breadboardHoleNet(hole)) return [];
+      return [{
+        id: `${net.id}-${index + 1}`,
+        netId: net.id,
+        from: endpoints[0],
+        to: endpoint,
+        role: net.role,
+        ...(net.color ? { color: net.color } : {}),
+      }];
+    });
+  }
   if (net.role === 'signal' && endpoints.length <= 5 && boards.length === 1
     && endpointPartIds.every((id) => id !== boards[0].id)) {
     const board = boards[0];
@@ -177,23 +359,42 @@ function expandNet(net: BlockNet, parts: CircuitPart[]): BlockWire[] {
     const located = endpoints.map((endpoint) => ({ endpoint, point: endpointPoint(endpoint, parts)! }));
     const boardCenterY = board.top + geometry.height / 2;
     const averageY = located.reduce((sum, item) => sum + item.point.y, 0) / located.length;
-    const rows = averageY < boardCenterY ? ['A', 'B', 'C', 'D', 'E'] : ['F', 'G', 'H', 'I', 'J'];
+    const half: 'upper' | 'lower' = averageY < boardCenterY ? 'upper' : 'lower';
+    const rows = half === 'upper' ? ['A', 'B', 'C', 'D', 'E'] : ['F', 'G', 'H', 'I', 'J'];
     const ordered = [...located].sort((a, b) => a.point.y - b.point.y);
     const assignedRows = ordered.length === 1
       ? [rows[2]]
       : ordered.map((_, index) => rows[Math.round(index * (rows.length - 1) / (ordered.length - 1))]);
-    let bestColumn = 1;
+    const reserved = reservedSignalJunctionColumns.get(board.id) ?? new Set<number>();
+    reservedSignalJunctionColumns.set(board.id, reserved);
+    const occupiedHoles = new Set<string>();
+    for (const part of parts) {
+      if (part.seating?.breadboardId !== board.id) continue;
+      for (const hole of Object.values(part.seating.pins)) occupiedHoles.add(hole);
+    }
+    let bestColumn = -1;
     let bestCost = Number.POSITIVE_INFINITY;
+    let bestTie = Number.POSITIVE_INFINITY;
+    const targetX = located.reduce((sum, item) => sum + item.point.x, 0) / located.length;
     for (let column = 1; column <= geometry.columns; column++) {
+      if (reserved.has(column)) continue;
+      if (assignedRows.some((row) => occupiedHoles.has(`${row}${column}`))) continue;
       const cost = ordered.reduce((sum, item, index) => {
         const point = endpointPoint(`${board.id}:${assignedRows[index]}${column}`, parts)!;
         return sum + Math.abs(point.x - item.point.x) + Math.abs(point.y - item.point.y);
       }, 0);
-      if (cost < bestCost) {
+      const centerPoint = endpointPoint(`${board.id}:${rows[2]}${column}`, parts)!;
+      const tie = Math.abs(centerPoint.x - targetX);
+      if (cost < bestCost - 0.01 || (Math.abs(cost - bestCost) <= 0.01 && tie < bestTie)) {
         bestCost = cost;
+        bestTie = tie;
         bestColumn = column;
       }
     }
+    if (bestColumn < 0) {
+      throw new Error(`Net ${net.id} could not find one electrically free breadboard strip for ${endpoints.length} shared signal endpoints.`);
+    }
+    reserved.add(bestColumn);
     return ordered.map((item, index): BlockWire => ({
       id: `${net.id}-${index + 1}`,
       netId: net.id,
@@ -267,10 +468,14 @@ function expandRails(rails: ProgramRail[], parts: CircuitPart[]): BlockWire[] {
       }
     }
 
-    const usedHoles = new Map<string, Set<number>>();
-    for (const rail of boardRails) {
-      if (!usedHoles.has(rail.rail)) usedHoles.set(rail.rail, new Set<number>());
-    }
+    // A column is one visible cable-entry lane across a +/- rail pair. Reserve
+    // it once per board edge so power and ground cannot be assigned on top of
+    // each other and then be rejected by the layout evaluator.
+    const usedColumns = new Map<'top' | 'bottom', Set<number>>([
+      ['top', new Set<number>()],
+      ['bottom', new Set<number>()],
+    ]);
+    const railEdge = (railName: string): 'top' | 'bottom' => railName.includes('bottom') ? 'bottom' : 'top';
 
     type ConnectionRequest = {
       railId: string;
@@ -346,7 +551,7 @@ function expandRails(rails: ProgramRail[], parts: CircuitPart[]): BlockWire[] {
     const assignedHoles = new Map<ConnectionRequest, number>();
 
     const pickHole = (req: ConnectionRequest, minCol?: number, maxCol?: number): number => {
-      const used = usedHoles.get(req.railName)!;
+      const used = usedColumns.get(railEdge(req.railName))!;
       const target = req.targetPoint;
       const exit = req.exit;
       const candidates = Array.from({ length: geometry.railHoles }, (_, index) => index + 1)
@@ -356,14 +561,22 @@ function expandRails(rails: ProgramRail[], parts: CircuitPart[]): BlockWire[] {
         .map((hole) => {
           const boardEndpoint = `${board.id}:${req.railName}${hole}`;
           const point = endpointPoint(boardEndpoint, parts)!;
+          const targetPart = parts.find((part) => part.id === req.targetPartId);
+          const targetRect = targetPart ? partRect(targetPart) : null;
+          const boardRect = partRect(board);
+          const componentIsRight = targetRect ? targetRect.x >= boardRect.x + boardRect.width : false;
+          const componentIsLeft = targetRect ? targetRect.x + targetRect.width <= boardRect.x : false;
           const wrongSide = exit === 'left' ? point.x > target.x - BLOCK_CELL_PX
             : exit === 'right' ? point.x < target.x + BLOCK_CELL_PX
               : exit === 'up' ? point.y > target.y - BLOCK_CELL_PX
                 : exit === 'down' ? point.y < target.y + BLOCK_CELL_PX
                   : false;
+          const wrongExternalLane = componentIsRight ? point.x >= target.x
+            : componentIsLeft ? point.x <= target.x
+              : false;
           return {
             hole,
-            distance: Math.abs(point.x - target.x) + (wrongSide ? 100_000 : 0),
+            distance: Math.abs(point.x - target.x) + (wrongSide || wrongExternalLane ? 100_000 : 0),
           };
         })
         .sort((a, b) => a.distance - b.distance || a.hole - b.hole);
@@ -375,25 +588,27 @@ function expandRails(rails: ProgramRail[], parts: CircuitPart[]): BlockWire[] {
 
     for (const [, bundle] of bundles) {
       if (bundle.length < 2) continue;
-      const isLateralRight = bundle.every((req) => req.targetPoint.x > board.left + geometry.width);
-      if (isLateralRight) {
-        for (const req of bundle) {
-          const used = usedHoles.get(req.railName)!;
-          const hole = !used.has(geometry.railHoles) ? geometry.railHoles : pickHole(req);
-          used.add(hole);
-          assignedHoles.set(req, hole);
-        }
-      } else {
-        bundle.sort((a, b) => a.targetPoint.x - b.targetPoint.x);
-        let prevCol = 0;
-        for (let i = 0; i < bundle.length; i++) {
-          const req = bundle[i];
-          const maxRemaining = bundle.length - 1 - i;
-          const minCol = Math.min(geometry.railHoles - maxRemaining, prevCol + 1);
-          const hole = pickHole(req, minCol);
-          assignedHoles.set(req, hole);
-          prevCol = hole;
-        }
+      bundle.sort((a, b) => a.targetPoint.x - b.targetPoint.x);
+      const edge = railEdge(bundle[0].railName);
+      const used = usedColumns.get(edge)!;
+      const averageX = bundle.reduce((sum, req) => sum + req.targetPoint.x, 0) / bundle.length;
+      const available = Array.from({ length: geometry.railHoles }, (_, index) => index + 1)
+        .filter((hole) => !used.has(hole))
+        .map((hole) => ({
+          hole,
+          distance: Math.abs(endpointPoint(`${board.id}:${bundle[0].railName}${hole}`, parts)!.x - averageX),
+        }))
+        .sort((a, b) => a.distance - b.distance || a.hole - b.hole)
+        .slice(0, bundle.length)
+        .map((candidate) => candidate.hole)
+        .sort((a, b) => a - b);
+      if (available.length !== bundle.length) {
+        throw new Error(`Rail pair on ${board.id} has no room for the ${bundle.length}-wire ${edge} cable.`);
+      }
+      for (let index = 0; index < bundle.length; index++) {
+        const hole = available[index];
+        used.add(hole);
+        assignedHoles.set(bundle[index], hole);
       }
     }
 
@@ -414,13 +629,22 @@ function expandRails(rails: ProgramRail[], parts: CircuitPart[]): BlockWire[] {
         && !isBreadboardType(targetPart.type)
         && !targetPart.type.includes('arduino')
         && pinIsFlexible(req.endpoint, parts);
-      const outsideRight = targetPoint.x > board.left + geometry.width;
-      const outsideLeft = targetPoint.x < board.left;
+      const boardRect = partRect(board);
+      const targetRect = targetPart ? partRect(targetPart) : null;
+      const outsideRight = targetRect ? targetRect.x >= boardRect.x + boardRect.width : targetPoint.x > boardRect.x + boardRect.width;
+      const outsideLeft = targetRect ? targetRect.x + targetRect.width <= boardRect.x : targetPoint.x < boardRect.x;
+      const outsideBelow = targetRect ? targetRect.y >= boardRect.y + boardRect.height : targetPoint.y > boardRect.y + boardRect.height;
+      const outsideAbove = targetRect ? targetRect.y + targetRect.height <= boardRect.y : targetPoint.y < boardRect.y;
       const externalRailCorner = isCablePeripheral && (outsideRight || outsideLeft)
         ? [{
             x: targetPoint.x,
             y: railPoint.y,
           }]
+        : isCablePeripheral && (outsideAbove || outsideBelow)
+          ? [{
+              x: railPoint.x,
+              y: targetPoint.y,
+            }]
         : undefined;
 
       if (req.isFeed) {
@@ -560,7 +784,11 @@ function compileWire(spec: BlockWire & RoutedWire): Partial<CircuitConnection> &
     }
   }
   const waypoints = full.slice(1, -1);
-  const color = spec.role === 'signal' && spec.color ? spec.color : standardWireColor(from, to, spec.role);
+  const inferredKind = inferWireKind(from, to, spec.role);
+  const color = spec.color
+    ?? (inferredKind === 'signal'
+      ? signalWireColor(spec.netId ?? spec.id ?? `${from}|${to}`)
+      : standardWireColor(from, to, spec.role));
   return {
     ...(spec.id ? { id: spec.id } : {}),
     ...(spec.netId ? { netId: spec.netId } : {}),
@@ -596,13 +824,37 @@ function visualRouteCost(parts: CircuitPart[], connections: CircuitConnection[])
   }, 0);
 }
 
+function routeCandidateCost(
+  quality: ReturnType<typeof evaluateLayout>,
+  visualCost: number,
+) {
+  const issueCost: Partial<Record<ReturnType<typeof evaluateLayout>['issues'][number]['kind'], number>> = {
+    'wire-through-part': 1_000,
+    'pin-fanout': 1_000,
+    'wire-through-board': 120,
+    // A few extra cells or bends are preferable to two distinct electrical
+    // paths visually becoming one path. Keep these far above ordinary route
+    // compactness costs so the refinement pass takes a clean lane when one
+    // exists instead of preserving a shorter but ambiguous route.
+    'wire-overlap': 1_400,
+    'wire-crossing': 1_200,
+    'wire-backtrack': 45,
+    'wire-notch': 20,
+    'too-many-bends': 18,
+    'long-route': 18,
+    'pin-exit': 35,
+    'connector-facing-away': 30,
+  };
+  return visualCost + quality.issues.reduce((total, issue) => total + (issueCost[issue.kind] ?? 0), 0);
+}
+
 function suggestCleanerPlacement(
   state: { parts: CircuitPart[]; connections: CircuitConnection[] },
   currentScore: number,
 ) {
   const currentVisualCost = visualRouteCost(state.parts, state.connections);
   const troubledWireIds = new Set(evaluateLayout(state).issues
-    .filter((issue) => issue.kind === 'wire-crossing' || issue.kind === 'wire-overlap' || issue.kind === 'wire-backtrack' || issue.kind === 'wire-notch' || issue.kind === 'excessive-gap' || issue.kind === 'split-source-cable' || issue.kind === 'perimeter-rail-detour' || issue.kind === 'viewport-overflow')
+    .filter((issue) => issue.kind === 'wire-crossing' || issue.kind === 'wire-overlap' || issue.kind === 'wire-backtrack' || issue.kind === 'wire-notch' || issue.kind === 'connector-facing-away' || issue.kind === 'excessive-gap' || issue.kind === 'split-source-cable' || issue.kind === 'perimeter-rail-detour' || issue.kind === 'viewport-overflow')
     .flatMap((issue) => issue.itemIds));
   const candidateConnections = state.connections
     .filter((wire) => troubledWireIds.size === 0 || troubledWireIds.has(wire.id))
@@ -683,7 +935,7 @@ function suggestCleanerPlacement(
           to: wire.to,
           color: wire.color,
         }));
-        for (const strategy of ['input', 'reverse', 'shortest', 'longest'] as const) {
+        for (const strategy of ['input', 'reverse', 'shortest', 'longest', 'external-first'] as const) {
           try {
             const routed = routeWires(specs, trialParts, [], strategy);
             const connections = routed.map((wire, index): CircuitConnection => ({
@@ -714,9 +966,8 @@ function suggestCleanerPlacement(
   if (!best) return undefined;
   return {
     reason: best.score > currentScore
-      ? 'Moving a connected component removes layout conflicts more effectively than adding wire checkpoints.'
-      : 'A small component slide removes avoidable route length or bends while preserving the same clean layout score.',
-    expectedLayoutScore: best.score,
+      ? `Move ${best.part.id} to [${best.at.x},${best.at.y}] before adding wire checkpoints; this removes more routing conflicts.`
+      : `Slide ${best.part.id} to [${best.at.x},${best.at.y}] before tuning wires; this removes avoidable route length or bends.`,
     applyWith: {
       replace: false,
       reroute: 'all',
@@ -776,92 +1027,37 @@ const STARTER_TYPES: readonly PartType[] = [
   'wokwi-hc-sr04',
   'wokwi-buzzer',
 ];
-const INVENTORY = `PIN-FIRST SHADOWS: 10u = 1 placement cell. pin@x,y is the exact integer terminal offset from the shadow top-left; its group is the outward exit side, or any for a flexible cable. Place and rotate for terminal flow first. The shadow is only a collision envelope. Keep one clear routing cell outside every used rigid pin bank because body non-overlap can still close its exit lane. Preserve required topology: a controller driving an externally powered stage normally needs a common ground, even when its physical route should move. Rail labels include physical gaps: express shared supply with rail() and let canonical geometry choose holes instead of guessing labels. If one local drop bends at a rail gap, translate the complete functional group one cell left or right before tuning that wire. A flexible external lead uses one corner at the load axis and runs directly along the rail axis. A rigid header preserves its outward side and leaves through the board boundary when a direct route would cross the board. When split top/bottom rails need continuity, bridge(id,breadboardId,"+|-","left|right") owns one clean outside-edge jumper; choose the edge nearest the source and away from active signal flow. Keep the controller and main distribution board in one working band when their active pin banks permit it; do not move the whole controller above or below the board to repair one wire. A numeric layout grade cannot accept a render: reject any placement that can move closer or share a clearer band without creating a crossing. Every :mount part must use seat() whenever the scene contains a breadboard; free placement is only valid without a breadboard.\n${compactBlockInventory(STARTER_TYPES)}`;
+const INVENTORY = `PIN-FIRST SHADOWS: 10u = 1 placement cell. Each WxH block is only a collision envelope; pin@x,y is the exact terminal offset and its group is the rigid exit side or any for a flexible lead. Leave one clear cell outside used rigid pin banks. Every :mount part must use seat() when a breadboard exists.\n${compactBlockInventory(STARTER_TYPES)}`;
 
-const VISUAL_GUIDANCE = `VISUAL DESIGN PROCEDURE
-Follow this order. Do not route first and organize afterward.
-1. Identify source, distribution, controller, switching stages, loads, and required common grounds. Keep the topology minimal: do not add a power connection merely because a compatible pin exists. A USB-powered controller driving an externally powered load normally shares ground with that source but does not also need the load battery connected to VIN unless the task explicitly requests it.
-2. Prefer one horizontal working band: conventional upright controller on the left, primary breadboard in the center, load on the right, and source at the nearest quiet board edge. Put controller and board side by side with a small clear gap unless the majority of active pin banks prove another arrangement is simpler.
-3. Assign every multi-terminal peripheral one board-edge zone before placing it. Treat all of its active pins as one bundle and compare the sum of rough Manhattan distances to their intended signal and distribution points. Never place a three-wire peripheral beside the controller merely to shorten its one signal while its power and ground then span the scene; two nearby distribution connections normally outweigh one remote signal. Keep each bundle in one zone and keep different bundles out of each other's corridors. Check whether the connector's ordered pins can map to the ordered approach lanes without exchanging sides. If not, test an adjacent board edge with a 90/270 rotation before routing; moving the whole cable bank is better than accepting one crossing.
-4. Plan breadboard electrical columns before seating. A-E holes with one number share a strip, F-J with that number share another, and the center trench separates them. Seat electrically connected mounted pins on the same strip so no rendered jumper is needed. Then treat each mounted local stage and its remaining holes as one compact functional group.
-5. Put each external source or load just outside the nearest board edge used by its terminals. A source belongs beside the distribution rail it feeds, not beneath an unrelated controller. Compare the combined rough cell distance of all its conductors at each open board edge and choose the shortest clear placement. When placing a battery below a board, keep its terminal bank within the board's horizontal span. Keep batteries out of the controller-to-board gap. Face rigid terminal banks toward their destination before routing. Enumerate only destination-facing orientations first; do not rotate a connector sideways or away merely to repair its cable. Translate it along the destination edge or change entry lanes instead.
-6. A paired source cable enters distribution on one nearest board edge. If a battery is below the board, both positive and ground enter the bottom rails; never send one conductor through the board to a far rail while its mate uses the near rail. Carry power from that entry rail to a local load strip with a short aligned drop or one quiet outside-edge bridge. Choose top versus bottom independently only for nets that are not conductors of the same connector cable. Assign quiet outer edges to supply entry and rail bridges. Keep signals near their functional stage. Preserve cable order: projected toward the destination, conductors must reach their adjacent distribution lanes in the same left-to-right or top-to-bottom order in which they leave the connector. If two conductors exchange sides, rotate or translate the source or choose different entry lanes; never accept the resulting crossing or U-turn.
-7. Build without via or tune. Let rail(), net(), and the router physicalize the topology.
-8. Judge the render with your eyes. For every external part, compare moving it left, right, up, down, and rotating it. Reject the placement if one simple change removes a reversal, long perimeter run, board crossing, or split group without creating a worse conflict.
-   Keep large controller boards in their conventional upright rotation by default. Never rotate a controller to improve one signal pin. Rotate it only when most active connections become simpler and no supply or ground route becomes worse.
-9. Explain every bend. Valid reasons are a rigid pin exit, real obstacle, board-edge entry, lane separation, or intentional shared corridor. If a route goes left then right, or up then down, move or rotate a component first. A flexible lead normally needs no more than one corner to its destination axis.
-10. Inspect diagnostics separately. A perfect numeric grade does not mean the picture is good. Do not finish while an obvious simpler placement exists.
+const VISUAL_GUIDANCE = `YOU OWN LAYOUT INTENT; THE COMPILER OWNS EXACT GEOMETRY.
+Before building, make a short private ledger:
+1. For every component: name its functional group, active pin bank, chosen board edge, and why its orientation faces that destination. Place by the combined distance of all active pins, not one favored signal.
+2. For every wire or cable bundle: predict its shape as straight, one-corner L, or a justified perimeter route. Every additional bend needs one real reason: rigid pin exit, obstacle, board entry, or lane separation.
+3. Put shared power and ground on marked rails. Put switched nodes and multi-drop signals on one local connected breadboard strip with net(); never use a + or - rail as a generic junction. An ordinary component pin is never a junction.
+   For a point-to-point signal, connect to the actual seated component pin. Name a board hole only when that connected strip is intentionally the junction for two or more endpoints.
+   For a local multi-drop node, route the external cable to its primary functional terminal (for example motor return to transistor collector), then seat passive or protective terminals on that same connected strip.
+   In net(), list that primary active terminal first; the compiler treats it as the local root and omits wires to terminals already joined by the same breadboard strip.
+4. Preserve connector order. Adjacent pins must reach adjacent lanes without crossing or exchanging sides.
+5. Seat mounted parts into electrically useful named holes. A-E and F-J are separate strips across the trench. Use the smallest board that leaves real routing margin; move to a full board when the half board is physically crowded or a dense multi-pin display needs it.
+6. Choose the rail side for each functional group once. Seat every rail-fed pin in the adjacent board half; never cross the center trench merely to reach power or ground.
+7. Omit wire colors unless the user explicitly requests one. The compiler assigns red to positive power, black to ground, and a stable non-power color to each signal net.
+8. Build first without via or tune. Inspect the render, then try moving or rotating the whole component before editing a wire.
+9. Reject any unexplained reversal: left-right, right-left, up-down, or down-up. Also reject a component that can move closer and remove a bend without creating a worse conflict.
 
-REJECT THESE SHAPES
-- Controller moved a whole row above or below its breadboard merely to repair one wire.
-- Large controller rotated or inverted to improve one signal while making the overall scene harder to read.
-- External load battery connected to controller VIN when the controller can remain USB-powered and only needs common ground.
-- A paired source cable split across opposite board edges (e.g. battery positive to +top and battery negative to -bottom), forcing a sprawling perimeter bypass wire. Connect both conductors to the same nearest rail pair (+bottom/-bottom or +top/-top).
-- Loose, sprawling layout leaving more than 3-4 cells of empty dead space between connected boards or peripherals. Use relative placement: rightOf(part, anchor, 2) or below(part, anchor, 2).
-- Long jumpers crossing the breadboard center trench when seating the part in the row half bordering its rail (rows A-E for top rail, F-J for bottom rail) eliminates the jumper.
-- Two conductors from one connector crossing, exchanging sides, or making opposite hooks before reaching adjacent distribution lanes.
-- A source or load beside one board edge with its rigid connector facing a different edge, unless a real obstacle blocks every destination-facing orientation.
-- Battery, motor, or peripheral far away while useful space exists beside its destination.
-- Three-wire peripheral placed for its signal pin alone while its two distribution wires become long, crossed, or detached from its cable.
-- Multi-wire connector kept on an edge where its pin order cannot match the approach-lane order, then repaired with hooks or crossings instead of moving the whole peripheral to an adjacent edge.
-- Battery under the controller when moving it under or beside the breadboard shortens both supply conductors.
-- Mountable parts floating around a breadboard instead of seated in named holes.
-- Power entering a board, leaving it, and entering again without an electrical reason.
-- Rail branch crossing active breadboard rows when it could remain on the rail axis or outside edge.
-- Top rail chosen for terminals clustered below the board, or bottom rail chosen for terminals clustered above it, causing an avoidable perimeter route.
-- Flexible load lead with an avoidable up-sideways-down or left-sideways-right detour.
-
-PREFERRED SHAPES
-- Controller -> snug 2-cell gap -> breadboard -> snug 2-cell gap -> external load in one readable flow band.
-- Use relative placement: rightOf("bb", "uno", 2), rightOf("motor", "bb", 2), below("bat", "bb", 2, 270) to prevent loose guesswork.
-- Source near the rail it feeds, paired supply conductors entering the same near rail pair, and one quiet-edge bridge for split rails.
-- Seated local stage aligned by columns for short rail, transistor, diode, and resistor drops. Seat parts in the row half bordering their rail (rows A-E for top rail, F-J for bottom rail) to eliminate trench-spanning jumpers.
-- In a motor switch, share one strip between resistor output and transistor base; share another between diode return, transistor collector, and motor return. Use the board's internal connection instead of drawing U-shaped jumpers.
-- Flexible motor lead turns once onto the destination rail or strip axis.
-- Rigid header is approached from its declared side; rotate or move the part instead of wrapping around it.
-- With multiple three-wire peripherals, assign separate board-edge zones: keep each signal/power/ground bundle together and minimize the combined length of all three, not one favored wire.
-- If a side-facing three-wire connector cannot meet its three lanes in order, rotate it toward an adjacent open edge so the pins can use separate aligned rows or columns.
-- Wide displays (e.g. lcd1602, oled) fit naturally above the breadboard (above("lcd", "bb", 2)), facing toward the top rails, keeping the horizontal span compact and avoiding canvas overflow.
-- Shared bus lines (e.g. I2C SDA/SCL on A4/A5) use two dedicated breadboard columns as a physical distribution trunk; all I2C devices drop directly into those two columns.
-- PIN PROXIMITY: Components connecting to Uno pins D0-D7 (e.g. pushbuttons on D2/D3) must sit on the left half of the breadboard (columns 1-10) directly adjacent to those pins to keep leads 2-4 cells long. Never place input buttons at the far right of the breadboard.
-- INLINE LOAD RESISTORS: Resistors protecting display segments or LEDs sit directly inline in rows A-C (for top pins) or rows H-J (for bottom pins) on the matching columns.
-- COLOR-CODED BUS RIBBONS: Multi-bit buses (7-segment, multi-LEDs) must use distinct individual wire colors (e.g. orange, red, yellow, lime, cyan, blue, purple) rather than monochrome green cables.`;
+Good: compact functional groups, ordered parallel bundles, one clear distribution point, short local drops.
+Bad: scene-sized perimeter loops, power entering and leaving the board repeatedly, direct pin fan-out, wires using the breadboard as empty canvas, or fixing poor placement with extra bends.
+A numeric score never accepts the picture. Finish only when every component location and every bend has an obvious physical reason.`;
 
 export function createBuildCircuitTool(): ToolDefinition {
   return {
     name: 'build-circuit',
-    description: `Build or refine a circuit with block placement and exact-pin routing. ONE CELL = ${BLOCK_CELL_PX}px = one breadboard-hole pitch. Cells describe coarse component placement and optional corridors only; exact pins may have a fractional-cell phase. Use align to slide one part inside the coarse plan when two connected pins should share a perfectly straight x- or y-axis. This one action works at four scales: replace the whole circuit (replace:true), move/add selected parts or wires (replace:false), align a real pin axis, or shift one existing wire lane with tune. Place non-seated parts by top-left integer cell at:[x,y]; each starter entry gives its WxH block and pin names grouped by exit side.\n\nPLAN BEFORE THE CALL\nDecompose the build into controller, power/distribution, functional modules, and external inputs/outputs. For every module, identify the controller or breadboard pin cluster it mostly uses. Decide the energy/signal flow, connector-facing direction, and one cable corridor before choosing cells. Place primary groups first, then local details.\n\nCOMPOSITION POLICY
-1. 4-QUADRANT MACRO ZONING:
-   - West (Left): Primary Controller (e.g. uno at [-20, 0]).
-   - Center: Breadboard circuit hub (e.g. rightOf("bb", "uno", 2)).
-   - North (Top): Wide Displays & Readouts (e.g. above("lcd", "bb", 2)), facing toward top rails.
-   - East (Right): Actuators, Motors, Servos (e.g. rightOf("motor", "bb", 2); stack multiple actuators vertically with below("s2", "s1", 2) with tight gap 1-2 cells).
-   - South (Bottom): Inputs, Sensors, Battery (e.g. below("pot", "uno", 2) or below("bat", "bb", 2, 270)).
-2. BOARD SELECTION MANDATE:
-   - Always choose 'breadboard' (full 63 columns) for any project featuring multi-pin ICs/displays (7-segment, LED bar graph, LCD, keypad) or circuits with >= 6 seated components.
-   - Use 'breadboard-half' (30 columns) ONLY for minimal micro-circuits (<= 5 parts, e.g. single LED + resistor or simple motor switch).
-   - NEVER cram 10+ components into a half-breadboard; spatial congestion causes overlapping components and unreadable routing.
-3. BREADBOARD SECTOR ZONING (on 63-column breadboard):
-   - Input Sector (Columns 5–20): Place pushbuttons, slide switches, and potentiometers here with their pull-up/down resistors.
-   - Center Display/IC Sector (Columns 28–38): Place multi-pin ICs, 7-segment displays, and LED arrays here.
-   - Expansion Sector (Columns 45–60): High-current stages, relays, secondary sensors, or rail bridges.
-   - Leave at least 4 clear columns between disparate functional stages!
-4. COMPONENT CLEARANCE & RESISTOR DISCIPLINE:
-   - Never seat a resistor or jumper in rows A-B directly in front of or touching the physical casing of a pushbutton, switch, or display in rows C-D.
-   - Keep seated parts separated so their physical bodies do not intersect. The compiler hard-rejects builds with 'seated-part-collision'.
-   - Resistors protecting display segments or LEDs should bridge rows in the same column (inline) or maintain a clear 2-column lateral offset from adjacent switches.
-5. PIN PROXIMITY: Place buttons, sensors, and discrete parts near the header pins they interface with:
-   - Uno pins D0-D7 connect to breadboard columns 1-15 on the left.
-   - Uno pins D8-D13 connect to breadboard columns 15-30 in the middle/upper area.
-   - Uno analog pins A0-A5 connect to lower breadboard rows or south peripherals.
-6. COLOR-CODED BUSES: Multi-signal buses (e.g. 7-segment, LED arrays) must assign distinct wire colors per trace (orange, red, yellow, lime, cyan, blue, purple) rather than monochrome green spaghetti.
-7. Arrange functional groups in signal or energy-flow order, but let pin-side fit outrank a conventional left-to-right layout.
-8. Place each peripheral beside the pin cluster it mostly uses, face its connector toward that cluster, and leave 2-4 clear cells for the cable to fan out. Treat adjacent signal/power/ground conductors as one ordered cable.
-9. Every pin has a fixed outward half-plane. Put the connected part or shared channel in that direction: a left-facing servo belongs to the right of the lane feeding it, so the route can approach from the left without doubling back.
-10. Align connected pin banks along one open channel. Move or rotate a component whenever that removes a left-right or up-down reversal; never preserve a poor placement and repair it with extra bends.
-11. An ordinary component pin is not a junction. When power or ground has multiple consumers, add or use a breadboard rail/distribution part: source to one rail hole, each consumer to its own nearby rail hole. Do not attach several rendered wires to one Uno or peripheral pin.
-12. Reserve separate parallel lanes for power and ground at the group edge. List the source first in multi-terminal supply nets. Keep signals inside the functional flow and use short local rail drops.
-13. Build once without wire hints. Inspect exact state and the render. Apply a verified placement suggestion or align a nearly straight connection before using via for a real obstacle or tune for final lane spacing.\n\nThe exact orthogonal router owns straight pin leads, obstacle avoidance, bends, and lane separation. Supply nets compile as source-rooted physical branches; other buses compile as spatial chains. A short shared lead at a real distribution terminal is intentional; arbitrary same-net overlap is not. Use wires for ordinary two-terminal signals. rotate 90/270 swaps footprint W/H and rotates pin sides with the part. Breadboard-mounted parts may use seat:{breadboardId,pin,hole}. The schema lists every supported type; call inspect-circuit with catalogTypes only when a non-starter footprint is needed.\n\n${VISUAL_GUIDANCE}\n\nSTARTER KIT format type=WxH[:mount][side:pin names]\n${INVENTORY}`,
+    description: `Build or refine a circuit with block placement and exact-pin routing. ONE CELL = ${BLOCK_CELL_PX}px = one breadboard-hole pitch. Cells describe coarse component placement and optional corridors only; exact pins may have a fractional-cell phase. Use align to slide one part inside the coarse plan when two connected pins should share a perfectly straight x- or y-axis. This one action works at four scales: replace the whole circuit (replace:true), move/add selected parts or wires (replace:false), align a real pin axis, or shift one existing wire lane with tune. Place non-seated parts by top-left integer cell at:[x,y]; each starter entry gives its WxH block and pin names grouped by exit side.\n\nPLAN BEFORE THE CALL\nDecompose the build into controller, power/distribution, functional modules, and external inputs/outputs. For every module, identify the controller or breadboard pin cluster it mostly uses. Decide the energy/signal flow, connector-facing direction, and one cable corridor before choosing cells. Place primary groups first, then local details.\n\nPIN-FIRST COMPOSITION
+1. Treat each part body as an obstacle around its exact pins. Choose the edge and rotation from the pins it must meet, not from a fixed scene template.
+2. Place connected groups close enough that each cable can be straight, one L, or a justified perimeter route. Keep connector order so adjacent conductors stay parallel instead of crossing.
+3. Before building, predict every external cable in layoutIntent. If a route contains left-then-right, up-then-down, or a tiny hook, move or rotate a component. A bend needs a visible obstacle or a deliberate perimeter corridor.
+4. Use a rail or connected breadboard strip for shared power/ground. Give each conductor its own nearby entry column; an ordinary pin is not a junction.
+5. Choose the smallest breadboard that leaves clear functional zones and routing corridors. Move to a full board only when actual component span, pin count, or route density needs it; never decide by part count alone.
+6. Build without corridor hints first. Inspect exact state and the render. Adjust placement before adding a sparse via, and use tune only for final lane spacing.\n\nThe exact orthogonal router owns straight pin leads, obstacle avoidance, bends, and lane separation. Supply nets compile as source-rooted physical branches. Small local shared signals use one connected strip; four- or five-endpoint shared signals can use visible local taps plus a breadboard trunk when one board is present. Larger or unsupported buses retain the conservative spatial-chain fallback instead of forcing an unsafe distribution pattern. A short shared lead at a real distribution terminal is intentional; arbitrary same-net overlap is not. Use wires for ordinary two-terminal signals. rotate 90/270 swaps footprint W/H and rotates pin sides with the part. Breadboard-mounted parts may use seat:{breadboardId,pin,hole}. The schema lists every supported type; call inspect-circuit with catalogTypes only when a non-starter footprint is needed.\n\n${VISUAL_GUIDANCE}\n\nSTARTER KIT format type=WxH[:mount][side:pin names]\n${INVENTORY}`,
     inputSchema: {
       type: 'object',
       properties: {
@@ -869,9 +1065,13 @@ export function createBuildCircuitTool(): ToolDefinition {
         reroute: { type: 'string', enum: ['affected', 'all'], description: 'With replace:false, defaults affected. Use all after a placement change that alters shared routing space.' },
         boardId: { type: 'string' },
         code: { type: 'string', description: 'Optional complete Arduino sketch in the same call.' },
+        layoutIntent: {
+          type: 'string',
+          description: 'Optional concise pre-build ledger: why each external component uses its edge/orientation and the expected straight, L-shaped, or justified perimeter shape of each wire bundle.',
+        },
         program: {
           type: 'string',
-          description: 'Optional tiny declarative scene program, exactly one listed call per line with JSON literals. Declarations may appear anywhere. Example: const uno = part("uno","arduino-uno",{"at":[-20,0]}); const bb = part("bb","breadboard-half",{"rightOf":"uno","gap":2}); const motor = part("m1","dc-motor",{"rightOf":"bb","gap":2}); const bat = part("bat","battery-9v",{"below":"bb","gap":2,"rotate":270}). This is not general JavaScript: do not invent object constraints, bare variable arguments, methods, loops, or return values. Dot or colon endpoints are accepted. Calls: part(id,type,{at:[x,y],rotate,attrs,rightOf,leftOf,above,below,gap,seat}), place(id,x,y,rotate), rightOf/leftOf/above/below(id,anchor,gap,offset), seat(id,breadboardId,anchorPin,hole), align(movingPin,fixedPin,"x|y"), wire(id,from,to,role,optionalSparseCorridor), net(id,role,[endpoints]), rail(id,breadboardId,"+top|-top|+bottom|-bottom",source,[consumers]), bridge(id,breadboardId,"+|-","left|right"). With one breadboard present, a signal net lands endpoints on distinct holes in one connected strip; wire is one direct cable. Treat parts as pin-first shadows and the breadboard as an electrical region, never empty routing canvas. rail resolves canonical geometry to choose nearby distinct holes for shared power or ground. bridge joins split rails outside the chosen quiet board edge. Omit corridors by default; use one or two cells only around a real functional region. Use align only after coarse placement to remove a verified sub-cell mismatch. Use program instead of parts/wires/nets; all forms compile through the same exact transaction and router.',
+          description: 'Optional tiny declarative scene program, exactly one listed call per line with JSON literals. Declarations may appear anywhere. Example: const uno = part("uno","arduino-uno",{"at":[-20,0]}); const bb = part("bb","breadboard-half",{"rightOf":"uno","gap":2}); const motor = part("m1","dc-motor",{"rightOf":"bb","gap":2}); const bat = part("bat","battery-9v",{"below":"bb","gap":2,"rotate":270}). This is not general JavaScript: do not invent object constraints, bare variable arguments, methods, loops, or return values. Dot or colon endpoints are accepted. Calls: part(id,type,{at:[x,y],rotate,attrs,rightOf,leftOf,above,below,gap,seat}), place(id,x,y,rotate), rightOf/leftOf/above/below(id,anchor,gap,offset), seat(id,breadboardId,anchorPin,hole), align(movingPin,fixedPin,"x|y"), wire(id,from,to,role,optionalSparseCorridor), net(id,role,[endpoints]), rail(id,breadboardId,"+top|-top|+bottom|-bottom",source,[consumers]), bridge(id,breadboardId,"+|-","left|right"). In a local multi-drop signal net, list the primary seated active terminal first; external branches root there and same-strip passive terminals need no extra wire. Otherwise, with one breadboard present, a signal net lands endpoints on distinct holes in one connected strip; wire is one direct cable. Treat parts as pin-first shadows and the breadboard as an electrical region, never empty routing canvas. rail is only for shared power or ground on marked +/- rails; use net for switched nodes and shared signals. bridge joins split rails outside the chosen quiet board edge. Omit corridors by default; use one or two cells only around a real functional region. Use align only after coarse placement to remove a verified sub-cell mismatch. Use program instead of parts/wires/nets; all forms compile through the same exact transaction and router.',
         },
         parts: {
           type: 'array',
@@ -1009,10 +1209,15 @@ export function createBuildCircuitTool(): ToolDefinition {
         if (looseMounts.length) {
           throw new Error(`Breadboard-mount parts must use named holes when a breadboard is present: ${looseMounts.map((part) => part.id).join(', ')}. Use seat(partId,breadboardId,anchorPin,hole).`);
         }
+        const signalJunctionColumns = new Map<string, Set<number>>();
+        const signalJunctionBundles = new Map<string, {
+          half: 'upper' | 'lower';
+          columnsByPartId: Map<string, number>;
+        }>();
         const requestedWires = [
           ...expandRails(program?.rails ?? [], stateAfterParts.parts),
           ...(program?.bridges ?? []).map((bridge) => expandRailBridge(bridge, stateAfterParts.parts)),
-          ...requestedNets.flatMap((net) => expandNet(net, stateAfterParts.parts)),
+          ...requestedNets.flatMap((net) => expandNet(net, stateAfterParts.parts, signalJunctionColumns, signalJunctionBundles)),
           ...requestedWireInputs,
         ];
         const tunedWires = tunes.map((tune) => tuningSpec(tune, stateAfterParts.connections, stateAfterParts.parts));
@@ -1051,7 +1256,7 @@ export function createBuildCircuitTool(): ToolDefinition {
             waypoints: wire.waypoints ?? [],
           })),
         ];
-        const candidates = (['input', 'reverse', 'shortest', 'longest'] as const).map((strategy) => {
+        const candidates = (['input', 'reverse', 'shortest', 'longest', 'external-first'] as const).map((strategy) => {
           const routed = routeWires(wires, stateAfterParts.parts, reservedConnections, strategy);
           const compiled = routed.map((wire, index) => compileWire({ ...wires[index], ...wire }));
           const connections = asConnections(compiled);
@@ -1061,9 +1266,12 @@ export function createBuildCircuitTool(): ToolDefinition {
             visualCost: visualRouteCost(stateAfterParts.parts, connections),
           };
         });
-        candidates.sort((a, b) => b.quality.score - a.quality.score || a.visualCost - b.visualCost);
+        candidates.sort((a, b) => (
+          routeCandidateCost(a.quality, a.visualCost) - routeCandidateCost(b.quality, b.visualCost)
+        ));
         let compiled = candidates[0].compiled;
         let routeQuality = candidates[0].quality;
+        let routeCost = routeCandidateCost(routeQuality, candidates[0].visualCost);
         for (let attempt = 0; attempt < wires.length * 2; attempt++) {
           const issue = routeQuality.issues.find((candidate) => (
             candidate.kind === 'wire-crossing'
@@ -1075,9 +1283,9 @@ export function createBuildCircuitTool(): ToolDefinition {
           if (!issue) break;
           const refinements = issue.itemIds.flatMap((wireId) => {
             const index = wires.findIndex((wire) => wire.id === wireId);
-            if (index < 0 || wires[index].via?.length) return [];
+            if (index < 0 || wires[index].via?.length || wires[index].viaPx?.length) return [];
             const otherConnections = asConnections(compiled).filter((connection) => connection.id !== wireId);
-            return (['input', 'reverse', 'shortest', 'longest'] as const).map((strategy) => {
+            return (['input', 'reverse', 'shortest', 'longest', 'external-first'] as const).map((strategy) => {
               const [routed] = routeWires([wires[index]], stateAfterParts.parts, otherConnections, strategy);
               const replacement = compileWire({ ...wires[index], ...routed });
               const next = compiled.map((wire, candidateIndex) => candidateIndex === index ? replacement : wire);
@@ -1089,10 +1297,92 @@ export function createBuildCircuitTool(): ToolDefinition {
               };
             });
           });
-          refinements.sort((a, b) => b.quality.score - a.quality.score || a.visualCost - b.visualCost);
-          if (!refinements.length || refinements[0].quality.score <= routeQuality.score) break;
+          if (issue.kind === 'wire-crossing') {
+            // A same-connector crossing often cannot be repaired one wire at a
+            // time because the fixed neighbor already owns the wrong fan-out
+            // lane. Re-route the whole physical pin bank atomically so existing
+            // router strategies can swap lane ownership without changing GPIOs.
+            const issueWires = issue.itemIds
+              .map((wireId) => wires.find((wire) => wire.id === wireId))
+              .filter((wire): wire is BlockWire => Boolean(wire));
+            const firstIssueWire = issueWires[0];
+            const bank = firstIssueWire
+              ? [firstIssueWire.from, firstIssueWire.to].map((endpoint) => {
+                  const partId = endpointParts(endpoint)?.partId;
+                  const part = stateAfterParts.parts.find((candidate) => candidate.id === partId);
+                  if (!partId || !part || isBreadboardType(part.type)) return undefined;
+                  return { partId, direction: pinExitDirection(endpoint, stateAfterParts.parts) };
+                }).find((candidate) => candidate && issueWires.every((wire) => (
+                  [wire.from, wire.to].some((endpoint) => (
+                    endpointParts(endpoint)?.partId === candidate.partId
+                    && pinExitDirection(endpoint, stateAfterParts.parts) === candidate.direction
+                  ))
+                )))
+              : undefined;
+            if (bank) {
+              const bankIndices = wires.flatMap((wire, index) => {
+                if (wire.via?.length || wire.viaPx?.length) return [];
+                const belongs = [wire.from, wire.to].some((endpoint) => (
+                  endpointParts(endpoint)?.partId === bank.partId
+                  && pinExitDirection(endpoint, stateAfterParts.parts) === bank.direction
+                ));
+                return belongs ? [index] : [];
+              });
+              if (bankIndices.length >= 2) {
+                const bankIds = new Set(bankIndices.flatMap((index) => wires[index].id ? [wires[index].id!] : []));
+                const bankPairs = new Set(bankIndices.map((index) => [wires[index].from, wires[index].to].sort().join('|')));
+                const otherConnections = asConnections(compiled).filter((connection) => (
+                  !bankIds.has(connection.id)
+                  && !bankPairs.has([connection.from, connection.to].sort().join('|'))
+                ));
+                const candidateFromOrder = (orderedIndices: number[], strategy: Parameters<typeof routeWires>[3]) => {
+                  const orderedWires = orderedIndices.map((index) => wires[index]);
+                  const routed = routeWires(orderedWires, stateAfterParts.parts, otherConnections, strategy);
+                  const replacements = new Map(orderedIndices.map((wireIndex, localIndex) => [
+                    wireIndex,
+                    compileWire({ ...wires[wireIndex], ...routed[localIndex] }),
+                  ]));
+                  const next = compiled.map((wire, candidateIndex) => replacements.get(candidateIndex) ?? wire);
+                  const connections = asConnections(next);
+                  return {
+                    compiled: next,
+                    quality: evaluateLayout({ parts: stateAfterParts.parts, connections }),
+                    visualCost: visualRouteCost(stateAfterParts.parts, connections),
+                  };
+                };
+                refinements.push(...(['input', 'reverse', 'shortest', 'longest', 'external-first'] as const).map((strategy) => (
+                  candidateFromOrder(bankIndices, strategy)
+                )));
+                const bankAxis = bank.direction === 'up' || bank.direction === 'down' ? 'x' : 'y';
+                const physicalOrder = [...bankIndices].sort((a, b) => {
+                  const endpointFor = (index: number) => [wires[index].from, wires[index].to].find((endpoint) => (
+                    endpointParts(endpoint)?.partId === bank.partId
+                    && pinExitDirection(endpoint, stateAfterParts.parts) === bank.direction
+                  ));
+                  const aEndpoint = endpointFor(a);
+                  const bEndpoint = endpointFor(b);
+                  const aPoint = aEndpoint ? endpointPoint(aEndpoint, stateAfterParts.parts) : undefined;
+                  const bPoint = bEndpoint ? endpointPoint(bEndpoint, stateAfterParts.parts) : undefined;
+                  return (aPoint?.[bankAxis] ?? 0) - (bPoint?.[bankAxis] ?? 0);
+                });
+                // Input-order routing gives the first pin the innermost free lane.
+                // Try both physical orders after a measured bank crossing, then
+                // let layout quality choose the readable one for this geometry.
+                refinements.push(candidateFromOrder(physicalOrder, 'input'));
+                refinements.push(candidateFromOrder([...physicalOrder].reverse(), 'input'));
+              }
+            }
+          }
+          refinements.sort((a, b) => (
+            routeCandidateCost(a.quality, a.visualCost) - routeCandidateCost(b.quality, b.visualCost)
+          ));
+          const refinedCost = refinements.length
+            ? routeCandidateCost(refinements[0].quality, refinements[0].visualCost)
+            : Number.POSITIVE_INFINITY;
+          if (refinedCost >= routeCost) break;
           compiled = refinements[0].compiled;
           routeQuality = refinements[0].quality;
+          routeCost = refinedCost;
         }
         circuitStore.applyConnections(compiled);
         const boardId = applyArduinoCode(effective);
@@ -1100,11 +1390,13 @@ export function createBuildCircuitTool(): ToolDefinition {
 
         const state = circuitStore.getSnapshot();
         const quality = evaluateLayout(state);
-        const blocking = quality.issues.filter((issue) => issue.kind === 'part-overlap' || issue.kind === 'wire-through-part' || issue.kind === 'seated-part-collision');
+        const blocking = quality.issues.filter((issue) => issue.severity === 'error' || issue.kind === 'seated-part-collision');
         if (blocking.length) {
           throw new Error(`Grid build rejected: ${blocking.map((issue) => issue.message).join(' | ')}`);
         }
-        const suggestedEdit = suggestCleanerPlacement(state, quality.score);
+        const suggestedEdit = input.suggestPlacement === false || quality.issues.some((issue) => issue.kind === 'connector-facing-away')
+          ? undefined
+          : suggestCleanerPlacement(state, quality.score);
         return toolResult({
           cellPixels: BLOCK_CELL_PX,
           ...(boardId ? { codeBoardId: boardId } : {}),

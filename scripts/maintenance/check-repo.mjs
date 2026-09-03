@@ -9,10 +9,8 @@ const fail = (message) => failures.push(message);
 const required = [
   'AGENTS.md',
   'README.md',
-  'docs/architecture/overview.md',
-  'docs/guides/agent-harnesses.md',
-  'docs/guides/adding-components.md',
-  'docs/legal/THIRD_PARTY_NOTICES.md',
+  'LICENSE',
+  'THIRD_PARTY_NOTICES.md',
   'src/components/partTypes.ts',
   'src/components/parts.ts',
   'src/components/registerElements.ts',
@@ -27,13 +25,16 @@ const required = [
   'scripts/testing/test-circuits.mjs',
   'scripts/testing/loader.mjs',
   'scripts/harness/run.mjs',
-  'scripts/harness/examples/motor-switch-good.json',
-  'scripts/harness/examples/servo-control-open.json',
+  'scripts/harness/examples/smoke.json',
   'scripts/maintenance/check-repo.mjs',
 ];
 for (const file of required) if (!exists(file)) fail(`Missing required project file: ${file}`);
 
 const forbidden = [
+  'docs',
+  '.agents',
+  'harness.md',
+  'scripts/agent-bench',
   'docs/GUIDE.md',
   'src/agent/layout.ts',
   'src/wires/router.ts',
@@ -59,6 +60,12 @@ for (const entry of rootEntries) {
   if (entry.isDirectory() && entry.name === '.tmp-chrome') fail('Temporary Chrome profile exists in repository root: .tmp-chrome/');
 }
 
+const harnessExampleDir = path.join(root, 'scripts/harness/examples');
+const harnessExamples = fs.readdirSync(harnessExampleDir, { withFileTypes: true })
+  .filter((entry) => entry.isFile())
+  .map((entry) => entry.name)
+  .sort();
+if (harnessExamples.join(',') !== 'ir-motor-hard.json,smoke.json') fail(`Unexpected harness examples: ${harnessExamples.join(', ') || '(none)'}`);
 const scriptRootFiles = fs.readdirSync(path.join(root, 'scripts'), { withFileTypes: true }).filter((entry) => entry.isFile());
 if (scriptRootFiles.length) fail(`scripts/ root should contain only organized subdirectories; found: ${scriptRootFiles.map((entry) => entry.name).join(', ')}`);
 
@@ -101,7 +108,7 @@ if (!mainSource.includes("./components/registerElements")) fail('src/main.tsx mu
 
 const packageJson = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8').replace(/^\uFEFF/, ''));
 const expectedScripts = {
-  'check:repo': 'node scripts/maintenance/check-repo.mjs',
+  check: 'node scripts/maintenance/check-repo.mjs && tsc --noEmit && vite build',
   test: 'node scripts/testing/test-circuits.mjs',
   harness: 'node scripts/harness/run.mjs',
 };

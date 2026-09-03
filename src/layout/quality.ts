@@ -1,14 +1,15 @@
 import type { CircuitConnection, CircuitDocument, CircuitPart, WirePoint } from '../circuit/types';
+import { getPartBounds, getPartPins, PART_DEFINITIONS } from '../components/parts';
 import { endpointParts, endpointPoint, partRect, pinExitDirection, type CardinalDirection } from '../wires/geometry';
 import { connectionPolyline, isOrthogonalPair, type WireAxis } from '../wires/path';
-import { BREADBOARD_HOLE_PITCH, isBreadboardType } from '../breadboard/geometry';
+import { BREADBOARD_HOLE_PITCH, getBreadboardGeometry, isBreadboardType } from '../breadboard/geometry';
 import { CANVAS_CENTER_X, CANVAS_CENTER_Y } from './placement';
 import { inferWireKind, wireColorMatchesStandard } from '../wires/conventions';
 
 const ROUTING_CELL_PX = BREADBOARD_HOLE_PITCH;
 
 type LayoutIssue = {
-  kind: 'part-overlap' | 'pin-fanout' | 'connector-facing-away' | 'controller-stacked' | 'split-source-cable' | 'excessive-gap' | 'trench-spanning-drop' | 'wire-through-part' | 'wire-through-board' | 'wire-crossing' | 'wire-overlap' | 'diagonal-waypoints' | 'too-many-bends' | 'long-route' | 'pin-exit' | 'wire-backtrack' | 'wire-notch' | 'wire-color' | 'perimeter-rail-detour' | 'same-column-rail-congestion' | 'viewport-overflow' | 'seated-part-collision' | 'board-capacity-recommendation';
+  kind: 'part-overlap' | 'pin-fanout' | 'connector-facing-away' | 'user-facing-orientation' | 'flexible-bundle-facing-away' | 'controller-stacked' | 'split-source-cable' | 'excessive-gap' | 'trench-spanning-drop' | 'wire-through-part' | 'wire-through-board' | 'wire-crossing' | 'wire-overlap' | 'diagonal-waypoints' | 'too-many-bends' | 'long-route' | 'pin-exit' | 'wire-backtrack' | 'wire-notch' | 'wire-color' | 'perimeter-rail-detour' | 'same-column-rail-congestion' | 'viewport-overflow' | 'seated-part-collision' | 'board-capacity-recommendation';
   severity: 'warning' | 'error';
   itemIds: string[];
   message: string;
@@ -40,6 +41,44 @@ function oppositeDirection(direction: CardinalDirection): CardinalDirection {
 function endpointPart(endpoint: string, parts: CircuitPart[]) {
   const id = endpointParts(endpoint)?.partId;
   return id ? parts.find((part) => part.id === id) : undefined;
+}
+
+function flexibleConnectorFace(part: CircuitPart, parts: CircuitPart[]) {
+  const pins = PART_DEFINITIONS[part.type].flexibleLeadPins ?? [];
+  const points = pins
+    .map((pin) => endpointPoint(`${part.id}:${pin}`, parts))
+    .filter((point): point is WirePoint => Boolean(point));
+  if (!points.length) return null;
+  const rect = partRect(part);
+  const point = {
+    x: points.reduce((sum, value) => sum + value.x, 0) / points.length,
+    y: points.reduce((sum, value) => sum + value.y, 0) / points.length,
+  };
+  const choices: Array<{ side: CardinalDirection; distance: number }> = [
+    { side: 'left', distance: Math.abs(point.x - rect.x) },
+    { side: 'right', distance: Math.abs(point.x - (rect.x + rect.width)) },
+    { side: 'up', distance: Math.abs(point.y - rect.y) },
+    { side: 'down', distance: Math.abs(point.y - (rect.y + rect.height)) },
+  ];
+  return { point, side: choices.reduce((best, value) => value.distance < best.distance ? value : best).side };
+}
+
+function projectionToward(side: CardinalDirection, from: WirePoint, to: WirePoint) {
+  if (side === 'left') return from.x - to.x;
+  if (side === 'right') return to.x - from.x;
+  if (side === 'up') return from.y - to.y;
+  return to.y - from.y;
+}
+
+
+function breadboardEndpointDirection(endpoint: string, parts: CircuitPart[]): CardinalDirection | null {
+  const parsed = endpointParts(endpoint);
+  if (!parsed) return null;
+  const part = parts.find((candidate) => candidate.id === parsed.partId);
+  if (!part || !isBreadboardType(part.type)) return null;
+  if (parsed.pinName.includes('top')) return 'up';
+  if (parsed.pinName.includes('bottom')) return 'down';
+  return null;
 }
 
 function backtrackDistance(points: WirePoint[]) {
@@ -81,18 +120,21 @@ function routingInteriorPoints(connection: CircuitConnection, points: WirePoint[
 
   const fromPart = endpointPart(connection.from, parts);
   if (fromPart && !fromPart.seating) {
-    const expected = pinExitDirection(connection.from, parts);
+    const expected = pinExitDirection(connection.from, parts)
+      ?? breadboardEndpointDirection(connection.from, parts);
     const actual = segmentDirection(points[0], points[1]);
     const next = points.length >= 3 ? segmentDirection(points[1], points[2]) : null;
-    // Only discount a compulsory pin lead when the route actually continues
-    // away from it. A wire that exits correctly and immediately doubles back
-    // over the same lead is real backtracking and must stay visible to scoring.
+    // Only discount a compulsory pin/rail lead when the route actually
+    // continues away from it. Breadboard top/bottom rail escapes are generated
+    // by the exact router just like rigid component pin leads and are not
+    // meaningful layout backtracking.
     if (expected && actual === expected && next !== oppositeDirection(expected)) startIndex = 1;
   }
 
   const toPart = endpointPart(connection.to, parts);
   if (toPart && !toPart.seating && endIndex - startIndex >= 2) {
-    const expectedExit = pinExitDirection(connection.to, parts);
+    const expectedExit = pinExitDirection(connection.to, parts)
+      ?? breadboardEndpointDirection(connection.to, parts);
     const expectedApproach = expectedExit ? oppositeDirection(expectedExit) : null;
     const actualApproach = segmentDirection(points.at(-2)!, points.at(-1)!);
     const previous = points.length >= 3 ? segmentDirection(points.at(-3)!, points.at(-2)!) : null;
@@ -177,6 +219,59 @@ function segmentIntersectsRect(segment: Segment, rect: Rect, inset = 5) {
     { a: { x: left, y: bottom }, b: { x: left, y: top } },
   ];
   return edges.some((edge) => segmentsIntersect(segment, edge));
+}
+
+function hasClearMonotonicOrthogonalRoute(connection: CircuitConnection, parts: CircuitPart[]) {
+  const start = endpointPoint(connection.from, parts);
+  const end = endpointPoint(connection.to, parts);
+  if (!start || !end) return false;
+
+  const endpointIds = new Set([connection.from, connection.to]
+    .map((endpoint) => endpointParts(endpoint)?.partId)
+    .filter((value): value is string => Boolean(value)));
+  const endpointBoards = new Set<string>();
+  for (const endpoint of [connection.from, connection.to]) {
+    const part = endpointPart(endpoint, parts);
+    if (!part) continue;
+    if (isBreadboardType(part.type)) endpointBoards.add(part.id);
+    else if (part.seating?.breadboardId) endpointBoards.add(part.seating.breadboardId);
+  }
+
+  const blocked = (segment: Segment) => parts.some((part) => {
+    if (endpointIds.has(part.id)) return false;
+    if (isBreadboardType(part.type) && endpointBoards.has(part.id)) return false;
+    return segmentIntersectsRect(segment, partRect(part), 0);
+  });
+
+  if (Math.abs(start.x - end.x) < 0.5 || Math.abs(start.y - end.y) < 0.5) {
+    return !blocked({ a: start, b: end });
+  }
+  const candidates = [
+    [start, { x: end.x, y: start.y }, end],
+    [start, { x: start.x, y: end.y }, end],
+  ];
+  return candidates.some((points) => points.slice(0, -1).every((point, index) => (
+    !blocked({ a: point, b: points[index + 1] })
+  )));
+}
+
+function orthogonalLengthInsideRect(segment: Segment, rect: Rect, inset = 7) {
+  const left = rect.x + inset;
+  const right = rect.x + rect.width - inset;
+  const top = rect.y + inset;
+  const bottom = rect.y + rect.height - inset;
+  if (left >= right || top >= bottom) return 0;
+  if (Math.abs(segment.a.y - segment.b.y) < 0.5) {
+    if (segment.a.y < top || segment.a.y > bottom) return 0;
+    return Math.max(0, Math.min(Math.max(segment.a.x, segment.b.x), right)
+      - Math.max(Math.min(segment.a.x, segment.b.x), left));
+  }
+  if (Math.abs(segment.a.x - segment.b.x) < 0.5) {
+    if (segment.a.x < left || segment.a.x > right) return 0;
+    return Math.max(0, Math.min(Math.max(segment.a.y, segment.b.y), bottom)
+      - Math.max(Math.min(segment.a.y, segment.b.y), top));
+  }
+  return 0;
 }
 
 function cross(a: WirePoint, b: WirePoint, c: WirePoint) {
@@ -337,6 +432,52 @@ export function evaluateLayout(document: Pick<CircuitDocument, 'parts' | 'connec
     }
   }
 
+  // Interaction affordance is part of physical correctness for user-facing
+  // peripherals. A handheld portrait remote laid sideways may have zero wire
+  // collisions, but it is still a visibly bad build because it is awkward to use.
+  for (const part of parts) {
+    if (part.seating || isBreadboardType(part.type) || !PART_DEFINITIONS[part.type].userFacing) continue;
+    const natural = getPartBounds(part.type);
+    const portrait = natural.height > natural.width * 1.12;
+    const landscape = natural.width > natural.height * 1.12;
+    if (!portrait && !landscape) continue;
+    const rotation = ((part.rotate ?? 0) % 360 + 360) % 360;
+    if (rotation === 0) continue;
+    issues.push({
+      kind: 'user-facing-orientation',
+      severity: 'warning',
+      itemIds: [part.id],
+      message: `${part.id} is a ${portrait ? 'portrait' : 'landscape'} user-facing accessory rotated ${rotation}°. Keep displays, keypads, and handheld controls in their natural readable orientation unless the requested interaction explicitly needs otherwise.`,
+    });
+  }
+
+  // Batteries, motors, and other flexible-lead parts still have a meaningful
+  // connector face. Their cables should leave toward the stage, not immediately
+  // reverse across the part body. This catches bad explicit rotate()/place()
+  // choices even when the router can technically recover from them.
+  for (const part of parts) {
+    if (part.seating || !(PART_DEFINITIONS[part.type].flexibleLeadPins?.length)) continue;
+    const face = flexibleConnectorFace(part, parts);if (!face) continue;
+    const relevant = connections.flatMap((connection) => {
+      if (endpointParts(connection.from)?.partId === part.id) return [{ wireId: connection.id, target: endpointPoint(connection.to, parts) }];
+      if (endpointParts(connection.to)?.partId === part.id) return [{ wireId: connection.id, target: endpointPoint(connection.from, parts) }];
+      return [];
+    }).filter((item): item is { wireId:string; target:WirePoint } => Boolean(item.target));
+    if (!relevant.length) continue;
+    const target = {
+      x: relevant.reduce((sum, item) => sum + item.target.x, 0) / relevant.length,
+      y: relevant.reduce((sum, item) => sum + item.target.y, 0) / relevant.length,
+    };
+    const projection = projectionToward(face.side, face.point, target);
+    if (projection >= -ROUTING_CELL_PX * 1.5) continue;
+    issues.push({
+      kind: 'flexible-bundle-facing-away',
+      severity: 'warning',
+      itemIds: [part.id, ...relevant.map(item => item.wireId)],
+      message: `${part.id}'s flexible lead bundle faces ${face.side}, but its connected stage is behind that face. Rotate or move ${part.id} so the leads leave toward the circuit instead of making a hairpin across the component body.`,
+    });
+  }
+
   for (const part of parts) {
     if (part.seating) continue;
     const activePins = new Map<string, { exit: CardinalDirection; point: WirePoint; targets: WirePoint[]; wireIds: string[] }>();
@@ -367,12 +508,43 @@ export function evaluateLayout(document: Pick<CircuitDocument, 'parts' | 'connec
     )));
     const averageProjection = projections.reduce((sum, value) => sum + value, 0) / projections.length;
     if (averageProjection >= -ROUTING_CELL_PX * 2) continue;
+    const userFacing = PART_DEFINITIONS[part.type].userFacing;
     issues.push({
       kind: 'connector-facing-away',
       severity: 'warning',
       itemIds: [part.id, ...new Set(pins.flatMap((pin) => pin.wireIds))],
-      message: `${part.id}'s active connector bank faces ${exit}, but its connected terminals are behind that side. Rotate or move the component so the connector faces its destination before routing.`,
+      message: userFacing
+        ? `${part.id}'s active connector bank faces ${exit}, but its connected terminals are behind that side. Move this user-facing accessory so the circuit lies in the connector's ${exit} half-plane. Keep the display or control in its natural readable orientation instead of rotating it upside down.`
+        : `${part.id}'s active connector bank faces ${exit}, but its connected terminals are behind that side. Rotate or move the component so the connector faces its destination before routing.`,
     });
+  }
+
+  // A flexible peripheral can physically accept a cable from any direction,
+  // but the rigid pin at the other end still owns the first routing half-plane.
+  // Calling this out directly turns an ugly perimeter route into a component
+  // placement decision instead of asking the router to disguise it.
+  for (const connection of connections) {
+    for (const [rigidEndpoint, movableEndpoint] of [[connection.from, connection.to], [connection.to, connection.from]] as const) {
+      const exit = pinExitDirection(rigidEndpoint, parts);
+      const rigidPoint = endpointPoint(rigidEndpoint, parts);
+      const movablePoint = endpointPoint(movableEndpoint, parts);
+      const movableId = endpointParts(movableEndpoint)?.partId;
+      const movable = parts.find((part) => part.id === movableId);
+      if (!exit || !rigidPoint || !movablePoint || !movable || movable.seating
+        || isBreadboardType(movable.type) || movable.type.includes('arduino')) continue;
+      const projection = exit === 'left' ? rigidPoint.x - movablePoint.x
+        : exit === 'right' ? movablePoint.x - rigidPoint.x
+          : exit === 'up' ? rigidPoint.y - movablePoint.y
+            : movablePoint.y - rigidPoint.y;
+      if (projection >= -ROUTING_CELL_PX * 2) continue;
+      issues.push({
+        kind: 'connector-facing-away',
+        severity: 'warning',
+        itemIds: [connection.id, endpointParts(rigidEndpoint)?.partId ?? rigidEndpoint, movable.id],
+        message: `${movable.id} is behind ${rigidEndpoint}'s ${exit}-facing pin. Move ${movable.id} into the open ${exit} half-plane of that pin, or choose a pin facing the intended component region, so ${connection.id} does not reverse around an obstacle.`,
+      });
+      break;
+    }
   }
 
   const uno = parts.find((p) => p.type === 'wokwi-arduino-uno');
@@ -402,20 +574,37 @@ export function evaluateLayout(document: Pick<CircuitDocument, 'parts' | 'connec
     }
   }
 
-  if (board) {
-    const boardRect = partRect(board);
+  const breadboards = parts.filter((part) => isBreadboardType(part.type));
+  if (breadboards.length) {
     for (const part of parts) {
       if (part.seating || isBreadboardType(part.type) || part.id === uno?.id) continue;
+      const connectedBoardIds = new Set<string>();
+      for (const connection of connections) {
+        const fromId = endpointParts(connection.from)?.partId;
+        const toId = endpointParts(connection.to)?.partId;
+        if (fromId !== part.id && toId !== part.id) continue;
+        const otherEndpoint = fromId === part.id ? connection.to : connection.from;
+        const other = endpointPart(otherEndpoint, parts);
+        if (!other) continue;
+        if (isBreadboardType(other.type)) connectedBoardIds.add(other.id);
+        else if (other.seating) connectedBoardIds.add(other.seating.breadboardId);
+      }
+      const relevantBoards = breadboards.filter((candidate) => connectedBoardIds.has(candidate.id));
+      if (!relevantBoards.length) continue;
       const rect = partRect(part);
-      const dx = Math.max(0, boardRect.x - (rect.x + rect.width), rect.x - (boardRect.x + boardRect.width));
-      const dy = Math.max(0, boardRect.y - (rect.y + rect.height), rect.y - (boardRect.y + boardRect.height));
-      const gapCells = Math.round(Math.max(dx, dy) / ROUTING_CELL_PX);
-      if (gapCells > 8) {
+      const ranked = relevantBoards.map((candidate) => {
+        const boardRect = partRect(candidate);
+        const dx = Math.max(0, boardRect.x - (rect.x + rect.width), rect.x - (boardRect.x + boardRect.width));
+        const dy = Math.max(0, boardRect.y - (rect.y + rect.height), rect.y - (boardRect.y + boardRect.height));
+        return { board: candidate, gapCells: Math.round(Math.max(dx, dy) / ROUTING_CELL_PX) };
+      }).sort((a, b) => a.gapCells - b.gapCells);
+      const closest = ranked[0];
+      if (closest.gapCells > 8) {
         issues.push({
           kind: 'excessive-gap',
           severity: 'warning',
-          itemIds: [part.id, board.id],
-          message: `${part.id} is placed ${gapCells} cells away from ${board.id}. Move it snug against the board edge it connects to (gap 1-3 cells) to eliminate sprawling wires.`,
+          itemIds: [part.id, closest.board.id],
+          message: `${part.id} is placed ${closest.gapCells} cells away from the connected ${closest.board.id}. Move it snug against that functional board edge (gap 1-3 cells) to eliminate sprawling wires.`,
         });
       }
     }
@@ -460,14 +649,14 @@ export function evaluateLayout(document: Pick<CircuitDocument, 'parts' | 'connec
       if (['A', 'B', 'C', 'D', 'E'].includes(rowLetter) && isBottomRail) {
         issues.push({
           kind: 'trench-spanning-drop',
-          severity: 'warning',
+          severity: 'error',
           itemIds: [connection.id, b.id],
           message: `${connection.id} connects row ${rowLetter} to ${railParsed.pinName} across the center divider. Use the near rail (+top/-top for rows A-E) or seat the part in rows F-J to keep rail drops short.`,
         });
       } else if (['F', 'G', 'H', 'I', 'J'].includes(rowLetter) && isTopRail) {
         issues.push({
           kind: 'trench-spanning-drop',
-          severity: 'warning',
+          severity: 'error',
           itemIds: [connection.id, b.id],
           message: `${connection.id} connects row ${rowLetter} to ${railParsed.pinName} across the center divider. Use the near rail (+bottom/-bottom for rows F-J) or seat the part in rows A-E to keep rail drops short.`,
         });
@@ -484,23 +673,38 @@ export function evaluateLayout(document: Pick<CircuitDocument, 'parts' | 'connec
         if (!partParsed || !railParsed) continue;
         if (partParsed.partId === board.id || railParsed.partId !== board.id) continue;
         const targetPart = parts.find((p) => p.id === partParsed.partId);
-        if (!targetPart || targetPart.seating || isBreadboardType(targetPart.type)) continue;
-        const targetRect = partRect(targetPart);
+        if (!targetPart || isBreadboardType(targetPart.type)) continue;
         const isTopRail = railParsed.pinName.startsWith('+top') || railParsed.pinName.startsWith('-top');
         const isBottomRail = railParsed.pinName.startsWith('+bottom') || railParsed.pinName.startsWith('-bottom');
+        if (targetPart.seating) {
+          const seatedHole = targetPart.seating.pins[partParsed.pinName];
+          const row = seatedHole?.charAt(0).toUpperCase();
+          const inTopHalf = Boolean(row && ['A', 'B', 'C', 'D', 'E'].includes(row));
+          const inBottomHalf = Boolean(row && ['F', 'G', 'H', 'I', 'J'].includes(row));
+          if ((inTopHalf && isBottomRail) || (inBottomHalf && isTopRail)) {
+            issues.push({
+              kind: 'trench-spanning-drop',
+              severity: 'error',
+              itemIds: [connection.id, targetPart.id, board.id],
+              message: `${targetPart.id}:${partParsed.pinName} is seated at ${seatedHole}, across the center trench from ${railParsed.pinName}. Move the whole ${targetPart.id} stage into the ${isTopRail ? 'A-E top' : 'F-J bottom'} half beside that rail instead of drawing a long vertical power drop.`,
+            });
+          }
+          continue;
+        }
+        const targetRect = partRect(targetPart);
         if (targetRect.y + targetRect.height <= boardRect.y && isBottomRail) {
           issues.push({
             kind: 'perimeter-rail-detour',
             severity: 'warning',
             itemIds: [connection.id, targetPart.id, board.id],
-            message: `${targetPart.id} is situated above ${board.id} but connects to ${railParsed.pinName}. Draw power from the near rail (+top/-top) or top header to avoid an outer perimeter detour.`,
+            message: `${targetPart.id} is above ${board.id}, but this electrical domain is distributed on ${railParsed.pinName}. Put ${targetPart.id} on the bottom side beside that rail and its local stage, or only move the domain to the top rail if that rail is electrically free. Do not cross an independent supply domain just to shorten this one cable.`,
           });
         } else if (targetRect.y >= boardRect.y + boardRect.height && isTopRail) {
           issues.push({
             kind: 'perimeter-rail-detour',
             severity: 'warning',
             itemIds: [connection.id, targetPart.id, board.id],
-            message: `${targetPart.id} is situated below ${board.id} but connects to ${railParsed.pinName}. Draw power from the near rail (+bottom/-bottom) to avoid an outer perimeter detour.`,
+            message: `${targetPart.id} is below ${board.id}, but this electrical domain is distributed on ${railParsed.pinName}. Put ${targetPart.id} on the top side beside that rail and its local stage, or only move the domain to the bottom rail if that rail is electrically free. Do not cross an independent supply domain just to shorten this one cable.`,
           });
         }
       }
@@ -552,18 +756,62 @@ export function evaluateLayout(document: Pick<CircuitDocument, 'parts' | 'connec
         }
       }
     }
-    if (board.type === 'breadboard-half' && seatedOnBoard.length >= 8) {
+    const hasDenseDisplay = seatedOnBoard.some((part) => (
+      part.type.includes('7segment')
+      || part.type.includes('led-bar-graph')
+      || part.type.includes('membrane-keypad')
+    ));
+    const occupiedColumns = [
+      ...seatedOnBoard.flatMap((part) => Object.values(part.seating?.pins ?? {})
+        .map((hole) => Number(/(\d+)$/.exec(hole)?.[1]))
+        .filter(Number.isFinite)),
+      ...connections.flatMap((connection) => [connection.from, connection.to].flatMap((endpoint) => {
+        const parsed = endpointParts(endpoint);
+        if (parsed?.partId !== board.id) return [];
+        const column = Number(/(\d+)$/.exec(parsed.pinName)?.[1]);
+        return Number.isFinite(column) ? [column] : [];
+      })),
+    ];
+    const occupiedSpan = occupiedColumns.length ? Math.max(...occupiedColumns) - Math.min(...occupiedColumns) + 1 : 0;
+    if (board.type === 'breadboard-half') {
+      const geometry = getBreadboardGeometry(board.type);
+      const physicallyCrowded = Boolean(geometry && seatedOnBoard.length >= 4 && occupiedSpan >= Math.ceil(geometry.columns * 0.84));
+      if (hasDenseDisplay || physicallyCrowded) {
+        issues.push({
+          kind: 'board-capacity-recommendation',
+          // Span alone is not a physical impossibility. A half board using most
+          // of its columns can still be the cleanest instructional layout when
+          // the stages are ordered and the router has clear lanes. Let the real
+          // seating/routing/collision checks decide feasibility, and keep this as
+          // visual feedback. Dense multi-pin displays remain a hard capacity
+          // case because their footprint genuinely needs the larger substrate.
+          severity: hasDenseDisplay ? 'error' : 'warning',
+          itemIds: [board.id],
+          message: hasDenseDisplay
+            ? `${board.id} is too small for its dense multi-pin display. Use a full breadboard.`
+            : `${board.id} uses ${occupiedSpan} of ${geometry?.columns ?? 30} terminal columns. Inspect the render: keep the half board if the stages and routing lanes still read cleanly; use a full board or split groups only if it actually looks cramped.`,
+        });
+      }
+    } else if (board.type === 'breadboard' && !hasDenseDisplay && occupiedSpan > 0 && occupiedSpan <= 28) {
       issues.push({
         kind: 'board-capacity-recommendation',
         severity: 'warning',
         itemIds: [board.id],
-        message: `${board.id} has ${seatedOnBoard.length} seated components. For circuits with 8+ seated components or multi-pin displays plus user inputs, upgrade to 'breadboard' (full 63-column) to keep routing spacious and uncrowded.`,
+        message: `${board.id} uses only about ${occupiedSpan} columns of a 63-column full breadboard. This active construction fits the 30-column half breadboard with margin. Prefer breadboard-half and rebuild so the functional stages stay compact; keep the full board only when the render shows the extra working space is actually useful.`,
       });
     }
   }
 
   if (parts.length >= 2) {
-    const unseated = parts.filter((p) => !p.seating);
+    const wiredPartIds = new Set(connections.flatMap((connection) => [connection.from, connection.to]
+      .map((endpoint) => endpointParts(endpoint)?.partId)
+      .filter((id): id is string => Boolean(id))));
+    // Keep the compactness metric about the wired construction. A wireless or
+    // otherwise unwired handheld accessory can intentionally occupy free side
+    // space without making the electrical layout itself sprawling.
+    const unseated = parts.filter((p) => !p.seating && (
+      wiredPartIds.has(p.id) || isBreadboardType(p.type) || getPartPins(p.type).length > 0
+    ));
     if (unseated.length >= 2) {
       const xs = unseated.map((p) => partRect(p).x);
       const xMaxs = unseated.map((p) => partRect(p).x + partRect(p).width);
@@ -571,12 +819,17 @@ export function evaluateLayout(document: Pick<CircuitDocument, 'parts' | 'connec
       const yMaxs = unseated.map((p) => partRect(p).y + partRect(p).height);
       const spanX = Math.round((Math.max(...xMaxs) - Math.min(...xs)) / ROUTING_CELL_PX);
       const spanY = Math.round((Math.max(...yMaxs) - Math.min(...ys)) / ROUTING_CELL_PX);
-      if (spanX > 85 || spanY > 60) {
+      // A controller + full breadboard + one external load is already roughly
+      // 100 physical routing cells wide. Keep this as a sprawl guard, not a
+      // pressure to compress a readable instructional layout into an arbitrary
+      // viewport score.
+      const allowedSpanX = 110 + Math.max(0, breadboards.length - 1) * 36;
+      if (spanX > allowedSpanX || spanY > 60) {
         issues.push({
           kind: 'viewport-overflow',
           severity: 'warning',
           itemIds: unseated.map((p) => p.id),
-          message: `The overall circuit span (${spanX} horizontal cells × ${spanY} vertical cells) exceeds the comfortable 2D working area. Stack wide displays above the breadboard with above() to keep the layout compact.`,
+          message: `The wired circuit span (${spanX} horizontal cells x ${spanY} vertical cells) exceeds the comfortable working area. Reconsider external placement or board count if the extra span does not make a path easier to trace.`,
         });
       }
     }
@@ -591,12 +844,25 @@ export function evaluateLayout(document: Pick<CircuitDocument, 'parts' | 'connec
       if (endpointPartIds.has(part.id) || part.seating) continue;
       if (segments.some((segment) => segmentIntersectsRect(segment, partRect(part), 7))) {
         if (isBreadboardType(part.type)) {
-          issues.push({
-            kind: 'wire-through-board',
-            severity: 'warning',
-            itemIds: [connection.id, part.id],
-            message: `${connection.id} uses ${part.id} as a routing corridor without terminating on it. Keep external cables outside the board and enter only at a named hole or rail.`,
-          });
+          const fromPart = endpointPart(connection.from, parts);
+          const toPart = endpointPart(connection.to, parts);
+          const bothLocal = fromPart?.seating?.breadboardId === part.id
+            && toPart?.seating?.breadboardId === part.id;
+          if (bothLocal) continue;
+          const insideLength = segments.reduce(
+            (sum, segment) => sum + orthogonalLengthInsideRect(segment, partRect(part), 7),
+            0,
+          );
+          const landsOnBoard = fromPart?.seating?.breadboardId === part.id || toPart?.seating?.breadboardId === part.id;
+          const allowedInsideCells = landsOnBoard ? 12 : 6;
+          if (insideLength > ROUTING_CELL_PX * allowedInsideCells) {
+            issues.push({
+              kind: 'wire-through-board',
+              severity: 'error',
+              itemIds: [connection.id, part.id],
+              message: `${connection.id} travels ${Math.round(insideLength / ROUTING_CELL_PX)} cells across ${part.id}. Move the external component or its seated functional stage to the facing board edge; enter locally instead of using the breadboard as routing canvas.`,
+            });
+          }
           continue;
         }
         issues.push({
@@ -651,7 +917,9 @@ export function evaluateLayout(document: Pick<CircuitDocument, 'parts' | 'connec
     }
     const backtrack = backtrackDistance(routingInterior);
     const endpointLeadReversal = doublesBackOverEndpointLead(connection, fullPoints, parts);
-    if (endpointLeadReversal || backtrack >= ROUTING_CELL_PX * 0.75) {
+    const avoidableBacktrack = backtrack >= ROUTING_CELL_PX * 0.75
+      && hasClearMonotonicOrthogonalRoute(connection, parts);
+    if (endpointLeadReversal || avoidableBacktrack) {
       issues.push({
         kind: 'wire-backtrack',
         severity: 'warning',
@@ -748,11 +1016,27 @@ export function evaluateLayout(document: Pick<CircuitDocument, 'parts' | 'connec
       if (!crossing) continue;
       const cx = Math.round((crossing.x - CANVAS_CENTER_X) / BREADBOARD_HOLE_PITCH);
       const cy = Math.round((crossing.y - CANVAS_CENTER_Y) / BREADBOARD_HOLE_PITCH);
+      const firstPartIds=[endpointParts(first.from)?.partId,endpointParts(first.to)?.partId].filter((id):id is string=>Boolean(id));
+      const secondPartIds=[endpointParts(second.from)?.partId,endpointParts(second.to)?.partId].filter((id):id is string=>Boolean(id));
+      const sharedPartId=firstPartIds.find(id=>secondPartIds.includes(id));
+      const sharedPart=sharedPartId?parts.find(part=>part.id===sharedPartId):undefined;
+      const sharedPinName=(connection:CircuitConnection)=>{
+        const from=endpointParts(connection.from),to=endpointParts(connection.to);
+        if(from&&from.partId===sharedPartId)return from.pinName;
+        if(to&&to.partId===sharedPartId)return to.pinName;
+        return undefined;
+      };
+      const numericArduinoGpios=sharedPart?.type==='wokwi-arduino-uno'
+        && /^\d+$/.test(sharedPinName(first)??'')
+        && /^\d+$/.test(sharedPinName(second)??'');
+      const message=numericArduinoGpios
+        ? `${first.id} crosses ${second.id} near physical routing cell (${cx}, ${cy}). Both leave the same Arduino digital header. If those GPIOs are interchangeable, consider a different pin assignment before adding routing detours.`
+        : `${first.id} crosses ${second.id} near physical routing cell (${cx}, ${cy}). Separate the routes when practical.`;
       issues.push({
         kind: 'wire-crossing',
         severity: 'warning',
         itemIds: [first.id, second.id],
-        message: `${first.id} crosses ${second.id} near physical routing cell (${cx}, ${cy}). Separate the routes when practical.`,
+        message,
       });
     }
   }
@@ -761,6 +1045,8 @@ export function evaluateLayout(document: Pick<CircuitDocument, 'parts' | 'connec
     'part-overlap': 20,
     'pin-fanout': 20,
     'connector-facing-away': 6,
+    'user-facing-orientation': 10,
+    'flexible-bundle-facing-away': 10,
     'controller-stacked': 12,
     'split-source-cable': 12,
     'excessive-gap': 8,

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-// Adapted from arcostasi/avr8js-electron-playground. See docs/legal/THIRD_PARTY_NOTICES.md.
+// Adapted from arcostasi/avr8js-electron-playground. See THIRD_PARTY_NOTICES.md.
 /**
  * SSD1306
  * Part of AVR8js

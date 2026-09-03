@@ -1,0 +1,11 @@
+{
+  "name": "smoke",
+  "calls": [
+    {
+      "input": {
+        "script": "const uno = part(\"uno\", \"arduino-uno\");\nconst r = part(\"r\", \"resistor\", { value: 220 });\nconst led = part(\"led\", \"led\", { color: \"red\" });\nconnect(uno.pin(\"9\"), r.pin(\"1\"), { id: \"drive\", role: \"signal\" });\nconnect(r.pin(\"2\"), led.pin(\"A\"), { id: \"ledNode\", role: \"signal\" });\nground(uno.pin(\"GND.1\"), led.pin(\"C\"));"
+      },
+      "tool": "build-circuit"
+    }
+  ]
+}

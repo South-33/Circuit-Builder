@@ -61,6 +61,8 @@ export type PartDefinition = {
   pinSummary: string;
   /** Pins whose visible cable can leave in any direction instead of a rigid header axis. */
   flexibleLeadPins?: string[];
+  /** Human-facing artwork whose natural reading/holding orientation should stay upright. */
+  userFacing?: boolean;
   breadboardMount?: boolean;
   keywords?: string[];
   properties?: PartPropertyDefinition[];
@@ -217,6 +219,7 @@ export const PART_DEFINITIONS: Record<PartType, PartDefinition> = {
     renderScale: 1,
     naturalSize: { width: 95.269 * FRITZING_SCALE, height: 151.872 * FRITZING_SCALE },
     simulated: true,
+    flexibleLeadPins: ['+', '-'],
     pinSummary: '+ = positive supply, - = negative/return.',
     keywords: ['battery', '9v', 'power', 'supply'],
     properties: [{ key: 'voltage', label: 'Voltage', kind: 'number', min: 1, max: 12, step: 0.1, unit: 'V' }],
@@ -488,6 +491,7 @@ export const PART_DEFINITIONS: Record<PartType, PartDefinition> = {
     renderScale: 9.6 / 9.5,
     naturalSize: { width: 265.83, height: 344 },
     simulated: true,
+    userFacing: true,
     pinSummary: 'R1-R4 rows and C1-C4 columns.',
     properties: [{
       key: 'columns', label: 'Columns', kind: 'select', options: [
@@ -706,6 +710,7 @@ export const PART_DEFINITIONS: Record<PartType, PartDefinition> = {
     renderScale: 0.72,
     naturalSize: { width: 151.18, height: 320.16 },
     simulated: true,
+    userFacing: true,
     pinSummary: 'Wireless NEC remote. No physical pins.',
     keywords: ['infrared', 'remote', 'nec'],
   },
@@ -720,6 +725,7 @@ export const PART_DEFINITIONS: Record<PartType, PartDefinition> = {
     renderScale: 9.6 / 9.5,
     naturalSize: { width: 302.5, height: 136.5 },
     simulated: true,
+    userFacing: true,
     pinSummary: 'GND, VCC, SDA, SCL. I2C address 0x27.',
     keywords: ['lcd', 'display', 'i2c', '1602'],
     properties: [{
@@ -739,6 +745,7 @@ export const PART_DEFINITIONS: Record<PartType, PartDefinition> = {
     renderScale: 9.6 / 9.5,
     naturalSize: { width: 355.5, height: 179.5 },
     simulated: true,
+    userFacing: true,
     pinSummary: 'GND, VCC, SDA, SCL. I2C address 0x27.',
     keywords: ['lcd', 'display', 'i2c', '2004'],
     properties: [{
@@ -758,6 +765,7 @@ export const PART_DEFINITIONS: Record<PartType, PartDefinition> = {
     renderScale: 0.96,
     naturalSize: { width: 150, height: 116 },
     simulated: true,
+    userFacing: true,
     pinSummary: 'DATA/SDA, CLK/SCL, power and control pins. I2C address 0x3C.',
     keywords: ['oled', 'display', 'i2c', 'ssd1306'],
   },
@@ -786,7 +794,7 @@ export const PART_DEFINITIONS: Record<PartType, PartDefinition> = {
     renderScale: 1,
     naturalSize: { width: 81.6, height: 61.2 },
     simulated: true,
-    pinSummary: 'SDA, SCL, VCC, GND, INT and auxiliary pins. I2C address 0x68.',
+    pinSummary: 'SDA, SCL, VCC, GND, INT and auxiliary pins. I2C address is 0x68 with AD0 low/default, or 0x69 with AD0 tied high.',
     breadboardMount: true,
     keywords: ['imu', 'accelerometer', 'gyro', 'i2c'],
     properties: [

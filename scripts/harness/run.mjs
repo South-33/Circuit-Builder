@@ -3,7 +3,6 @@
 
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -13,13 +12,14 @@ function parseArgs(argv) {
   const options = { list: false, input: '', out: '' };
   for (let index = 0; index < argv.length; index++) {
     const arg = argv[index];
+    if (arg === '--') continue;
     if (arg === '--list') options.list = true;
     else if (arg === '--input') options.input = argv[++index] ?? '';
     else if (arg === '--out') options.out = argv[++index] ?? '';
     else throw new Error(`Unknown argument: ${arg}`);
   }
   if (!options.list && !options.input) {
-    throw new Error('Usage: pnpm harness -- --input <scenario.json> [--out <directory>]\n       pnpm harness:list');
+    throw new Error('Usage: pnpm harness --input <scenario.json> [--out <directory>]\\n       pnpm harness:list');
   }
   return options;
 }
@@ -38,10 +38,32 @@ function findBrowser() {
   return candidates.find((candidate) => fs.existsSync(candidate)) ?? null;
 }
 
-async function waitForHttp(url, timeoutMs = 15_000) {
+function childTail(child, limit = 3000) {
+  const stdout = child.__capturedStdout ?? '';
+  const stderr = child.__capturedStderr ?? '';
+  return `${stdout}${stderr}`.trim().slice(-limit);
+}
+
+function captureChildOutput(child) {
+  child.__capturedStdout = '';
+  child.__capturedStderr = '';
+  child.stdout?.on('data', (chunk) => {
+    child.__capturedStdout = `${child.__capturedStdout}${chunk}`.slice(-12_000);
+  });
+  child.stderr?.on('data', (chunk) => {
+    child.__capturedStderr = `${child.__capturedStderr}${chunk}`.slice(-12_000);
+  });
+  return child;
+}
+
+async function waitForHttp(url, timeoutMs = 20_000, child, label = 'process') {
   const deadline = Date.now() + timeoutMs;
   let lastError;
   while (Date.now() < deadline) {
+    if (child && child.exitCode !== null) {
+      const detail = childTail(child);
+      throw new Error(`${label} exited with code ${child.exitCode} before ${url} became ready.${detail ? `\n${detail}` : ''}`);
+    }
     try {
       const response = await fetch(url);
       if (response.ok) return response;
@@ -50,7 +72,9 @@ async function waitForHttp(url, timeoutMs = 15_000) {
     }
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
-  throw lastError ?? new Error(`Timed out waiting for ${url}`);
+  const detail = child ? childTail(child) : '';
+  const reason = lastError instanceof Error ? lastError.message : String(lastError ?? `Timed out waiting for ${url}`);
+  throw new Error(`${label} did not become ready at ${url}: ${reason}${detail ? `\n${detail}` : ''}`);
 }
 
 class CDP {
@@ -140,14 +164,21 @@ const serverPort = 4700 + Math.floor(Math.random() * 400);
 const debugPort = 9700 + Math.floor(Math.random() * 250);
 const serverUrl = `http://127.0.0.1:${serverPort}/`;
 const viteBin = path.join(root, 'node_modules', 'vite', 'bin', 'vite.js');
-const profileDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tinkercad-harness-'));
-const server = spawn(process.execPath, [viteBin, '--host', '127.0.0.1', '--port', String(serverPort), '--strictPort'], {
+const profileRoot = path.join(root, 'benchmark-results', '.tmp');
+fs.mkdirSync(profileRoot, { recursive: true });
+const profileDir = fs.mkdtempSync(path.join(profileRoot, 'tinkercad-harness-'));
+const server = captureChildOutput(spawn(process.execPath, [viteBin, '--host', '127.0.0.1', '--port', String(serverPort), '--strictPort'], {
   cwd: root,
-  stdio: 'ignore',
-});
-const browser = spawn(browserPath, [
+  stdio: ['ignore', 'pipe', 'pipe'],
+  windowsHide: true,
+}));
+const browser = captureChildOutput(spawn(browserPath, [
   '--headless=new',
   '--disable-gpu',
+  '--disable-gpu-shader-disk-cache',
+  '--disable-gpu-program-cache',
+  '--disable-features=SkiaGraphite',
+  '--disable-background-networking',
   '--no-first-run',
   '--no-default-browser-check',
   '--remote-allow-origins=*',
@@ -155,12 +186,12 @@ const browser = spawn(browserPath, [
   `--user-data-dir=${profileDir}`,
   '--window-size=1440,1000',
   serverUrl,
-], { stdio: 'ignore' });
+], { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true }));
 
 let cdp;
 try {
-  await waitForHttp(serverUrl);
-  const targets = await (await waitForHttp(`http://127.0.0.1:${debugPort}/json/list`)).json();
+  await waitForHttp(serverUrl, 20_000, server, 'Vite server');
+  const targets = await (await waitForHttp(`http://127.0.0.1:${debugPort}/json/list`, 20_000, browser, 'Headless browser')).json();
   const target = targets.find((item) => item.type === 'page' && item.url.includes(`127.0.0.1:${serverPort}`));
   if (!target) throw new Error('Could not find the headless workbench page.');
   cdp = new CDP(target.webSocketDebuggerUrl);
@@ -207,9 +238,28 @@ try {
   }
 } finally {
   try { cdp?.close(); } catch {}
-  try { browser.kill(); } catch {}
-  try { server.kill(); } catch {}
-  if (path.dirname(profileDir) === os.tmpdir() && path.basename(profileDir).startsWith('tinkercad-harness-')) {
-    try { fs.rmSync(profileDir, { recursive: true, force: true }); } catch {}
+  const stop = (child) => new Promise((resolve) => {
+    if (child.exitCode !== null) return resolve();
+    const timeout = setTimeout(resolve, 5000);
+    child.once('exit', () => {
+      clearTimeout(timeout);
+      resolve();
+    });
+    try {
+      if (process.platform === 'win32' && child.pid) {
+        const killer = spawn('taskkill', ['/pid', String(child.pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true });
+        killer.once('exit', () => {});
+      } else {
+        child.kill();
+      }
+    } catch { resolve(); }
+  });
+  await Promise.all([stop(browser), stop(server)]);
+  if (path.dirname(profileDir) === profileRoot && path.basename(profileDir).startsWith('tinkercad-harness-')) {
+    for (let attempt = 0; attempt < 8 && fs.existsSync(profileDir); attempt++) {
+      try { fs.rmSync(profileDir, { recursive: true, force: true }); } catch {}
+      if (fs.existsSync(profileDir)) await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+    if (fs.existsSync(profileDir)) process.stderr.write(`Warning: could not remove temporary browser profile ${profileDir}\n`);
   }
 }

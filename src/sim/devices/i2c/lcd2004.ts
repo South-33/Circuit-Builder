@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-// Adapted from arcostasi/avr8js-electron-playground. See docs/legal/THIRD_PARTY_NOTICES.md.
+// Adapted from arcostasi/avr8js-electron-playground. See THIRD_PARTY_NOTICES.md.
 /**
  * LCD2004
  * 4×20 character LCD controller (HD44780 compatible via I2C).

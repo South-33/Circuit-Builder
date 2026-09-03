@@ -1,5 +1,6 @@
 import type { CircuitPart } from '../../../circuit/types';
-import { traceToArduinoPin } from '../../circuitGraph';
+import { traceToArduinoPin, traceToPower } from '../../circuitGraph';
+import { isGroundPin, isPositivePowerPin } from '../../pins';
 import { getElement, pinNode, type DeviceContext } from '../shared';
 import { I2CBus, type I2CDevice } from './bus';
 import { DS1307Controller, DS1307_ADDR } from './ds1307';
@@ -23,15 +24,25 @@ type OledElement = HTMLElement & {
   redraw?: () => void;
 };
 
-function connectedTo(context: DeviceContext, part: CircuitPart, pin: string, arduinoPin: string) {
+function connectedTo(context: DeviceContext, part: CircuitPart, pin: string, arduinoPins: string[]) {
+  const accepted = new Set(arduinoPins.map((candidate) => candidate.toUpperCase()));
   return traceToArduinoPin(context.graph, pinNode(part, pin))
-    .some((trace) => trace.pin.toUpperCase() === arduinoPin.toUpperCase());
+    .some((trace) => accepted.has(trace.pin.toUpperCase()));
 }
 
 function hasI2CWiring(context: DeviceContext, part: CircuitPart) {
   const dataPin = part.type === 'wokwi-ssd1306' ? 'DATA' : 'SDA';
   const clockPin = part.type === 'wokwi-ssd1306' ? 'CLK' : 'SCL';
-  return connectedTo(context, part, dataPin, 'A4') && connectedTo(context, part, clockPin, 'A5');
+  return connectedTo(context, part, dataPin, ['A4', 'A4.2'])
+    && connectedTo(context, part, clockPin, ['A5', 'A5.2']);
+}
+
+function mpu6050Address(context: DeviceContext, part: CircuitPart) {
+  const ad0Power = traceToPower(context.graph, pinNode(part, 'AD0'));
+  if (ad0Power.some((trace) => isPositivePowerPin(trace.part.type, trace.pin))) return 0x69;
+  if (ad0Power.some((trace) => isGroundPin(trace.part.type, trace.pin))) return MPU6050_ADDR;
+  const requestedAddress = Number(part.attrs.address ?? MPU6050_ADDR);
+  return requestedAddress === 0x69 ? 0x69 : MPU6050_ADDR;
 }
 
 function applyLcdFrame(element: LcdElement | null, frame: ReturnType<LCD1602Controller['render']> | false) {
@@ -98,8 +109,7 @@ function bindDs1307(context: DeviceContext, bus: I2CBus, part: CircuitPart) {
 function bindMpu6050(context: DeviceContext, bus: I2CBus, part: CircuitPart) {
   if (!hasI2CWiring(context, part)) return;
   const controller = new MPU6050Controller();
-  const requestedAddress = Number(part.attrs.address ?? MPU6050_ADDR);
-  const address = requestedAddress === 0x69 ? 0x69 : MPU6050_ADDR;
+  const address = mpu6050Address(context, part);
   if (!registerDevice(bus, address, controller)) return;
 
   const update = () => {

@@ -24,24 +24,24 @@ export const BLOCK_SERVO_CONTROL_INPUT = Object.freeze({
     // original C benchmark exposed around the Uno power header.
     { id: 'feed5v', from: 'uno:5V', to: 'bb:+bottom1', role: 'power', path: [[-18, 25], [4, 25], [4, 20]] },
     { id: 'feedgnd', from: 'uno:GND.2', to: 'bb:-bottom1', role: 'ground', path: [[-17, 24], [3, 24], [3, 19]] },
-    { id: 'a0', from: 'uno:A0', to: 'bb:E16', role: 'signal', path: [[-13, 23], [19, 23], [19, 9]] },
+    { id: 'a0', from: 'uno:A0', to: 'bb:E18', role: 'signal' },
 
     // Breadboard rails are the power/ground trunks. Loads branch from the
     // rails instead of fanning multiple long wires out of Uno 5V/GND.
     { id: 'jump5v', from: 'bb:+bottom24', to: 'bb:+top24', role: 'power', path: [[31, 20], [31, 2]] },
     { id: 'jumpgnd', from: 'bb:-bottom25', to: 'bb:-top25', role: 'ground', path: [[32, 19], [32, 1]] },
-    { id: 'potv', from: 'pot:VCC', to: 'bb:+top14', role: 'power', path: [[19, -1], [19, 2]] },
-    { id: 'potg', from: 'pot:GND', to: 'bb:-top12', role: 'ground', path: [[17, -1], [17, 1]] },
+    { id: 'potv', from: 'pot:VCC', to: 'bb:+top20', role: 'power' },
+    { id: 'potg', from: 'pot:GND', to: 'bb:-top21', role: 'ground' },
     { id: 'servov', from: 'bb:+top23', to: 'servo:V+', role: 'power', path: [[30, 2], [35, 2], [35, 9], [37, 9]] },
     { id: 'servog', from: 'bb:-top22', to: 'servo:GND', role: 'ground', path: [[29, 1], [36, 1], [36, 8], [37, 8]] },
 
     // Signals use separate lanes. The pot signal enters a breadboard strip and
     // A0 reaches the same strip from below, which keeps the board visually
     // compact without requiring an arbitrary wire junction feature.
-    { id: 'pots', from: 'pot:SIG', to: 'bb:A16', role: 'signal', path: [[18, -1], [18, 5]] },
+    { id: 'pots', from: 'pot:SIG', to: 'bb:A18', role: 'signal' },
     { id: 'servop', from: 'uno:9', to: 'servo:PWM', role: 'signal', path: [[-18, -12], [37, -12], [37, 10]] },
     { id: 'drive', from: 'uno:6', to: 'bb:A8', role: 'signal', path: [[-14, -4], [10, -4], [10, 5], [11, 5]] },
-    { id: 'ledg', from: 'bb:E13', to: 'bb:-bottom12', role: 'ground', path: [[16, 9], [17, 9], [17, 19]] },
+    { id: 'ledg', from: 'led:C', to: 'bb:-top5', role: 'ground' },
   ],
 });
 
@@ -65,29 +65,23 @@ export const DENSE_NET_SERVO_INPUT = Object.freeze({
 export const MOTOR_SWITCH_INPUT = Object.freeze({
   replace: true,
   program: [
-    'const uno = part("uno","arduino-uno",{"at":[-32,8]})',
-    'const board = part("board","breadboard-half",{"at":[0,8]})',
-    'place("battery",8,30,270)',
-    'place("motor",38,10,0)',
-    'const battery = part("battery","battery-9v",{})',
-    'const motor = part("motor","dc-motor",{})',
+    'const uno = part("uno","arduino-uno",{"at":[-37,0]})',
+    'const board = part("board","breadboard-half",{"at":[-5,0]})',
+    'const motor = part("motor","dc-motor",{"at":[34,5]})',
+    'const battery = part("battery","battery-9v",{"at":[4,-18],"rotate":90})',
     'const q = part("q","npn-transistor",{})',
-    'const diode = part("diode","rectifier-diode",{})',
     'const resistor = part("resistor","resistor",{"attrs":{"value":1000}})',
-    'seat("q","board","C","J25")',
+    'const diode = part("diode","rectifier-diode",{"rotate":180})',
+    'seat("q","board","B","E24")',
+    'seat("resistor","board","2","A20")',
     'seat("diode","board","A","A25")',
-    'seat("resistor","board","1","E18")',
-    'align("battery.+","board.+bottom6","x")',
-    'align("motor.2","board.B25","y")',
-    'wire("battery-plus","battery.+","board.+bottom6","power")',
-    'bridge("power-bridge","board","+","left")',
-    'wire("battery-ground","battery.-","board.-bottom7","ground")',
-    'rail("motor-power","board","+top","board.+top6",["diode.C","motor.1"])',
-    'wire("logic-ground","uno.GND.2","board.-bottom2","ground")',
-    'wire("transistor-ground","q.E","board.-bottom20","ground")',
-    'wire("motor-return","motor.2","board.B25","power")',
-    'wire("return-bridge","board.E25","board.F25","power")',
-    'wire("drive-in","uno.5","board.A18","signal")',
-    'wire("drive-base","board.E24","board.F24","signal")',
+    'align("motor.2","q.C","y")',
+    'rail("supply","board","+top","battery.+",["motor.1","diode.C"])',
+    'rail("return","board","-top","battery.-",["q.E"])',
+    'wire("logic-ground","uno.GND.2","board:-bottom3","ground")',
+    'bridge("ground-bridge","board","-","left")',
+    'wire("motor-switch","motor.2","q.C","signal")',
+    'wire("drive","uno.9","resistor.1","signal")',
+    'wire("base-link","resistor.2","q.B","signal")',
   ].join('\n'),
 });

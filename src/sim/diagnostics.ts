@@ -15,6 +15,34 @@ import {
 } from './pins';
 import { breadboardHoleNet } from '../breadboard/geometry';
 
+type I2CDeviceInfo = {
+  partId: string;
+  boardId: string;
+  address: number;
+};
+
+function i2cAddress(part: CircuitDocument['parts'][number], graph: ReturnType<typeof buildCircuitGraph>) {
+  if (part.type === 'wokwi-ssd1306') return 0x3c;
+  if (part.type === 'wokwi-ds1307') return 0x68;
+  if (part.type === 'wokwi-lcd1602' || part.type === 'wokwi-lcd2004') return 0x27;
+  if (part.type !== 'wokwi-mpu6050') return undefined;
+  const ad0Power = traceToPower(graph, nodeRef(part.id, 'AD0'));
+  if (ad0Power.some((trace) => isPositivePowerPin(trace.part.type, trace.pin))) return 0x69;
+  return Number(part.attrs.address) === 0x69 ? 0x69 : 0x68;
+}
+
+function i2cBoardFor(part: CircuitDocument['parts'][number], graph: ReturnType<typeof buildCircuitGraph>) {
+  const dataPin = part.type === 'wokwi-ssd1306' ? 'DATA' : 'SDA';
+  const clockPin = part.type === 'wokwi-ssd1306' ? 'CLK' : 'SCL';
+  const dataBoards = traceToArduinoPin(graph, nodeRef(part.id, dataPin))
+    .filter((trace) => ['A4', 'A4.2'].includes(trace.pin.toUpperCase()))
+    .map((trace) => trace.part.id);
+  const clockBoards = new Set(traceToArduinoPin(graph, nodeRef(part.id, clockPin))
+    .filter((trace) => ['A5', 'A5.2'].includes(trace.pin.toUpperCase()))
+    .map((trace) => trace.part.id));
+  return dataBoards.find((boardId) => clockBoards.has(boardId));
+}
+
 export function diagnoseCircuit(document: Pick<CircuitDocument, 'parts' | 'connections'>): Diagnostic[] {
   const graph = buildCircuitGraph(document);
   const diagnostics: Diagnostic[] = [];
@@ -160,6 +188,29 @@ export function diagnoseCircuit(document: Pick<CircuitDocument, 'parts' | 'conne
         itemIds: [transistor.id],
       });
     }
+  }
+
+  const i2cDevices: I2CDeviceInfo[] = document.parts.flatMap((part) => {
+    const address = i2cAddress(part, graph);
+    if (address === undefined) return [];
+    const boardId = i2cBoardFor(part, graph);
+    return boardId ? [{ partId: part.id, boardId, address }] : [];
+  });
+  const i2cGroups = new Map<string, I2CDeviceInfo[]>();
+  for (const device of i2cDevices) {
+    const key = `${device.boardId}:${device.address}`;
+    const group = i2cGroups.get(key) ?? [];
+    group.push(device);
+    i2cGroups.set(key, group);
+  }
+  for (const devices of i2cGroups.values()) {
+    if (devices.length < 2) continue;
+    const address = devices[0].address;
+    diagnostics.push({
+      severity: 'error',
+      message: `I2C address conflict at 0x${address.toString(16).toUpperCase().padStart(2, '0')}: ${devices.map((device) => device.partId).join(', ')} are on the same bus. Change a configurable address pin or device address before simulation.`,
+      itemIds: devices.map((device) => device.partId),
+    });
   }
 
   for (const connection of document.connections) {

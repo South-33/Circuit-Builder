@@ -180,10 +180,10 @@ try {
       replace: true,
       parts: [
         { id: 'uno', type: 'arduino-uno', at: [-35, 0] },
-        { id: 'servo', type: 'servo', at: [5, 0] },
+        { id: 'servo', type: 'servo', at: [5, -15] },
       ],
       wires: [
-        { id: 'pwm', from: 'uno:9', to: 'servo:PWM', role: 'signal', path: [[-5, -2], [3, -2], [3, 5]] },
+        { id: 'pwm', from: 'uno:9', to: 'servo:PWM', role: 'signal' },
       ],
     }, { signal: new AbortController().signal });
     window.dispatchEvent(new Event('webmcp:frame-circuit'));

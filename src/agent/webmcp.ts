@@ -7,8 +7,8 @@ import { buildCircuitGraph, directlyConnectedNodes } from '../sim/circuitGraph';
 import { diagnoseCircuit } from '../sim/diagnostics';
 import { simulator } from '../sim/simulator';
 import { WIRING_GUIDE } from '../wires/conventions';
-import { endpointPoint, pinExitDirection } from '../wires/geometry';
-import { createBuildCircuitTool } from './buildCircuit';
+import { endpointPoint, partRect, pinExitDirection } from '../wires/geometry';
+import { createSemanticCircuitTool } from './semanticCircuit';
 import { BLOCK_UNITS_PER_CELL, blockDefinition, blockPlacement, partBlockAt } from './geometry';
 import { agentPartType, agentPartTypeEnum, canonicalEndpoint, requirePartType, requireString } from './input';
 import { toolResult } from './protocol';
@@ -109,6 +109,7 @@ function inspectCircuit(input: Record<string, unknown>) {
         id: part.id,
         type: agentPartType(part.type),
         ...(!part.seating ? { blockAt: partBlockAt(part), blockSize: { w: block.w, h: block.h } } : {}),
+        ...(includeLayout ? { rectPx: partRect(part) } : {}),
         ...(part.rotate ? { rotate: part.rotate } : {}),
         ...(part.attrs && Object.keys(part.attrs).length ? { attrs: part.attrs } : {}),
         ...(part.seating ? { seating: part.seating } : {}),
@@ -131,6 +132,8 @@ function inspectCircuit(input: Record<string, unknown>) {
       from: wire.from,
       to: wire.to,
       color: wire.color,
+      fromPx: endpointPoint(wire.from, state.parts),
+      toPx: endpointPoint(wire.to, state.parts),
       ...(wire.waypoints?.length ? { routePx: wire.waypoints } : {}),
     })),
     ...(netTrace ? { net: { root: input.netOf, connectedNodes: netTrace } } : {}),
@@ -160,7 +163,7 @@ function commonTools(): ToolDefinition[] {
   return [
     {
       name: 'inspect-circuit',
-      description: 'Read exact circuit state, diagnostics, nets, code, and optional block-grid layout. Pins include exit side, exact block-relative position, and ordered edge offset. build-circuit contains starter geometry; request catalogTypes only for non-starter footprints or exact connector maps.',
+      description: 'Read exact circuit state, diagnostics, nets, code, and optional physical layout. Use build-circuit for semantic construction; request catalogTypes only when exact component pin details are needed.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -179,7 +182,7 @@ function commonTools(): ToolDefinition[] {
         return toolResult(inspectCircuit(input));
       },
     },
-    createBuildCircuitTool(),
+    createSemanticCircuitTool(),
     {
       name: 'set-code',
       description: 'Replace the complete Arduino sketch on an Arduino Uno.',

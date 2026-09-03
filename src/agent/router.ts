@@ -1,6 +1,6 @@
 import { isBreadboardType } from '../breadboard/geometry';
 import type { CircuitConnection, CircuitPart, WirePoint } from '../circuit/types';
-import { endpointParts, endpointPoint, partRect, pinExitDirection, pinIsFlexible } from '../wires/geometry';
+import { endpointParts, endpointPoint, partRect, pinExitDirection, pinIsFlexible, type CardinalDirection } from '../wires/geometry';
 import { connectionPolyline, simplifyWirePoints } from '../wires/path';
 import { BLOCK_CELL_PX, blockCellToCanvas, type BlockCell } from './geometry';
 
@@ -12,13 +12,15 @@ export type RoutableWire = {
   via?: BlockCell[];
   /** Exact internal corridor used by tune; never part of the agent schema. */
   viaPx?: WirePoint[];
+  /** Compiler-owned local junction hint. Not exposed through the agent schema. */
+  directBoardEntry?: boolean;
 };
 
 export type RoutedWire = RoutableWire & { points: WirePoint[] };
 
-type Rect = { left: number; top: number; right: number; bottom: number };
+type Rect = { left: number; top: number; right: number; bottom: number; partId?: string };
 type Segment = { a: WirePoint; b: WirePoint };
-type OccupiedSegment = Segment & { netId?: string };
+type OccupiedSegment = Segment & { netId?: string; endpointPartIds?: string[]; localBoardId?: string };
 type GraphEdge = { to: number; length: number };
 type SearchNode = { node: number; direction: number; cost: number; estimate: number; serial: number };
 
@@ -65,6 +67,9 @@ function uniqueSorted(values: number[]) {
 }
 
 function obstacles(parts: CircuitPart[], wire?: RoutableWire, escapedBoardIds = new Set<string>()): Rect[] {
+  const fromBoardId = wire ? endpointBoardId(wire.from, parts) : undefined;
+  const toBoardId = wire ? endpointBoardId(wire.to, parts) : undefined;
+  const localBoardId = fromBoardId && fromBoardId === toBoardId ? fromBoardId : undefined;
   const endpointPartIds = wire
     ? new Set([wire.from, wire.to].flatMap((endpoint) => {
         const partId = endpointParts(endpoint)?.partId;
@@ -78,27 +83,48 @@ function obstacles(parts: CircuitPart[], wire?: RoutableWire, escapedBoardIds = 
     if (isBreadboardType(part.type)) endpointBoardIds.add(part.id);
     if (part.seating) endpointBoardIds.add(part.seating.breadboardId);
   }
-  const flexibleEndpointPartIds = wire
-    ? new Set([wire.from, wire.to]
-        .filter((endpoint) => pinIsFlexible(endpoint, parts))
-        .map((endpoint) => endpointParts(endpoint)?.partId)
-        .filter((partId): partId is string => Boolean(partId)))
-    : new Set<string>();
   return parts.flatMap((part) => {
-    if (part.seating) return [];
-    if (flexibleEndpointPartIds.has(part.id)) return [];
     // A breadboard is not empty canvas. External-to-external cables go around
     // it; only a wire that terminates on this board may enter its footprint.
     if (isBreadboardType(part.type) && endpointBoardIds.has(part.id) && !escapedBoardIds.has(part.id)) return [];
     const rect = partRect(part);
-    const clearance = isBreadboardType(part.type) ? 0 : CLEARANCE;
+    // Breadboard-local jumpers legitimately pass close to mounted component
+    // bodies because the holes themselves are tightly spaced. Keep only a small
+    // physical margin there; external cables retain the larger visual clearance.
+    const clearance = isBreadboardType(part.type)
+      ? 0
+      : endpointPartIds.has(part.id)
+        // The wire's own terminal lead must be allowed through that component's
+        // visual clearance margin. The physical body remains a hard obstacle,
+        // while unrelated wires still see the normal inflated rectangle. This
+        // matters for snug board-edge peripherals where two legal endpoint leads
+        // can otherwise have overlapping clearance margins despite a clear gap.
+        ? 0
+        : localBoardId && part.seating?.breadboardId === localBoardId
+          ? 1
+          : CLEARANCE;
     return [{
+      partId: part.id,
       left: rect.x - clearance,
       top: rect.y - clearance,
       right: rect.x + rect.width + clearance,
       bottom: rect.y + rect.height + clearance,
     }];
   });
+}
+
+function flexibleLeadDirection(endpoint: string, parts: CircuitPart[]) {
+  if (!pinIsFlexible(endpoint, parts)) return null;
+  const parsed=endpointParts(endpoint),part=parts.find(candidate=>candidate.id===parsed?.partId),pin=endpointPoint(endpoint,parts);
+  if(!part||!pin)return null;
+  const rect=partRect(part);
+  const choices:Array<[CardinalDirection,number]>=[
+    ['left',Math.abs(pin.x-rect.x)],
+    ['right',Math.abs(pin.x-(rect.x+rect.width))],
+    ['up',Math.abs(pin.y-rect.y)],
+    ['down',Math.abs(pin.y-(rect.y+rect.height))],
+  ];
+  return choices.reduce((best,item)=>item[1]<best[1]?item:best)[0];
 }
 
 function pointInside(point: WirePoint, rect: Rect) {
@@ -136,11 +162,78 @@ function endpointLead(endpoint: string, otherEndpoint: string, parts: CircuitPar
     const laterallyOutside = otherRect
       ? otherRect.x >= boardRect.x + boardRect.width || otherRect.x + otherRect.width <= boardRect.x
       : false;
+    const verticallyOutside = otherRect
+      ? otherRect.y >= boardRect.y + boardRect.height || otherRect.y + otherRect.height <= boardRect.y
+      : false;
     const directRouteWouldCrossBoard = otherPin
       ? otherPin.y > boardRect.y + EPSILON
         && otherPin.y < boardRect.y + boardRect.height - EPSILON
         && Math.abs(otherPin.y - pin.y) > LANE * 1.25
       : false;
+    if (allowAutomaticBoardEscape && otherRect && otherPin && (laterallyOutside || verticallyOutside)) {
+      const isRailEndpoint=/^[+-](top|bottom)\d+$/.test(parsed.pinName);
+      if(isRailEndpoint&&laterallyOutside){
+        const otherDirection=pinExitDirection(otherEndpoint,parts);
+        if(parsed.pinName.includes('bottom')&&otherDirection==='down'){
+          return {pin,escape:{x:pin.x,y:boardRect.y+boardRect.height+CLEARANCE}};
+        }
+        if(parsed.pinName.includes('top')&&otherDirection==='up'){
+          return {pin,escape:{x:pin.x,y:boardRect.y-CLEARANCE}};
+        }
+        // Rails are distribution backbones, not ordinary board holes. When the
+        // source is beside the board, enter the rail from that side at the rail's
+        // own y coordinate. This keeps a battery/Arduino feed bundled and lets
+        // the rail visibly carry power across the board instead of forcing a
+        // needless top/bottom perimeter U before the feed even reaches the rail.
+        const otherCenterX=otherRect.x+otherRect.width/2,boardCenterX=boardRect.x+boardRect.width/2;
+        return {pin,escape:{x:otherCenterX<boardCenterX?boardRect.x-CLEARANCE:boardRect.x+boardRect.width+CLEARANCE,y:pin.y}};
+      }
+      const otherDirection = pinExitDirection(otherEndpoint, parts);
+      const pointsTowardBoard = otherDirection === 'down'
+        ? otherRect.y + otherRect.height <= boardRect.y
+        : otherDirection === 'up'
+          ? otherRect.y >= boardRect.y + boardRect.height
+          : otherDirection === 'right'
+            ? otherRect.x + otherRect.width <= boardRect.x
+            : otherDirection === 'left'
+              ? otherRect.x >= boardRect.x + boardRect.width
+              : false;
+      // A rigid connector that already points toward the board should enter from
+      // the physically adjacent edge. Otherwise preserve its exit direction as a
+      // clean perimeter lane. This keeps side-mounted controller headers parallel
+      // without making an above-board module take a U-turn to the opposite edge.
+      if (!pointsTowardBoard) {
+        if (otherDirection === 'up') return { pin, escape: { x: pin.x, y: boardRect.y - CLEARANCE } };
+        if (otherDirection === 'down') return { pin, escape: { x: pin.x, y: boardRect.y + boardRect.height + CLEARANCE } };
+        if (otherDirection === 'left') return { pin, escape: { x: boardRect.x - CLEARANCE, y: pin.y } };
+        if (otherDirection === 'right') return { pin, escape: { x: boardRect.x + boardRect.width + CLEARANCE, y: pin.y } };
+      }
+      const outsideSides = [
+        ...(otherRect.y + otherRect.height <= boardRect.y
+          ? [{ distance: boardRect.y - (otherRect.y + otherRect.height), escape: { x: pin.x, y: boardRect.y - CLEARANCE } }]
+          : []),
+        ...(otherRect.y >= boardRect.y + boardRect.height
+          ? [{ distance: otherRect.y - (boardRect.y + boardRect.height), escape: { x: pin.x, y: boardRect.y + boardRect.height + CLEARANCE } }]
+          : []),
+        ...(otherRect.x + otherRect.width <= boardRect.x
+          ? [{ distance: boardRect.x - (otherRect.x + otherRect.width), escape: { x: boardRect.x - CLEARANCE, y: pin.y } }]
+          : []),
+        ...(otherRect.x >= boardRect.x + boardRect.width
+          ? [{ distance: otherRect.x - (boardRect.x + boardRect.width), escape: { x: boardRect.x + boardRect.width + CLEARANCE, y: pin.y } }]
+          : []),
+      ].sort((a, b) => a.distance - b.distance);
+      if (outsideSides.length) return { pin, escape: outsideSides[0].escape };
+
+      // Flexible leads have no rigid exit, so use the nearest board edge while
+      // preserving the target column/row for the final approach.
+      const choices = [
+        { distance: Math.abs(otherPin.y - boardRect.y), escape: { x: pin.x, y: boardRect.y - CLEARANCE } },
+        { distance: Math.abs(otherPin.y - (boardRect.y + boardRect.height)), escape: { x: pin.x, y: boardRect.y + boardRect.height + CLEARANCE } },
+        { distance: Math.abs(otherPin.x - boardRect.x), escape: { x: boardRect.x - CLEARANCE, y: pin.y } },
+        { distance: Math.abs(otherPin.x - (boardRect.x + boardRect.width)), escape: { x: boardRect.x + boardRect.width + CLEARANCE, y: pin.y } },
+      ].sort((a, b) => a.distance - b.distance);
+      return { pin, escape: choices[0].escape };
+    }
     if (allowAutomaticBoardEscape && laterallyOutside && directRouteWouldCrossBoard && parsed.pinName.includes('top')) {
       return { pin, escape: { x: pin.x, y: boardRect.y - CLEARANCE } };
     }
@@ -148,9 +241,9 @@ function endpointLead(endpoint: string, otherEndpoint: string, parts: CircuitPar
       return { pin, escape: { x: pin.x, y: boardRect.y + boardRect.height + CLEARANCE } };
     }
   }
-  const direction = pinExitDirection(endpoint, parts);
+  const direction = pinExitDirection(endpoint, parts) ?? flexibleLeadDirection(endpoint,parts);
   if (!direction) return { pin, escape: pin };
-  if (!part || part.seating || isBreadboardType(part.type)) return { pin, escape: pin };
+  if (!part || isBreadboardType(part.type)) return { pin, escape: pin };
   const rect = partRect(part);
   // Some visual pins protrude beyond their canonical part rectangle. Anchor the
   // escape to both geometries so the visible lead is always one meaningful
@@ -195,12 +288,71 @@ function properCrossing(first: Segment, second: Segment) {
     && point.y < Math.max(vertical.a.y, vertical.b.y) - EPSILON;
 }
 
-function occupancyPenalty(candidate: Segment, occupied: OccupiedSegment[], netId?: string) {
+function parallelProximity(first: Segment, second: Segment) {
+  const firstAxis = axis(first.a, first.b);
+  const secondAxis = axis(second.a, second.b);
+  if (firstAxis < 0 || firstAxis !== secondAxis) return null;
+  if (firstAxis === 0) {
+    const longitudinal = Math.max(0, Math.min(Math.max(first.a.x, first.b.x), Math.max(second.a.x, second.b.x))
+      - Math.max(Math.min(first.a.x, first.b.x), Math.min(second.a.x, second.b.x)));
+    return longitudinal > EPSILON ? { distance: Math.abs(first.a.y - second.a.y), longitudinal } : null;
+  }
+  const longitudinal = Math.max(0, Math.min(Math.max(first.a.y, first.b.y), Math.max(second.a.y, second.b.y))
+    - Math.max(Math.min(first.a.y, first.b.y), Math.min(second.a.y, second.b.y)));
+  return longitudinal > EPSILON ? { distance: Math.abs(first.a.x - second.a.x), longitudinal } : null;
+}
+
+function endpointBoardId(endpoint: string, parts: CircuitPart[]) {
+  const parsed = endpointParts(endpoint);
+  if (!parsed) return undefined;
+  const part = parts.find((candidate) => candidate.id === parsed.partId);
+  if (!part) return undefined;
+  if (isBreadboardType(part.type)) return part.id;
+  return part.seating?.breadboardId;
+}
+
+function occupancyPenalty(
+  candidate: Segment,
+  occupied: OccupiedSegment[],
+  netId?: string,
+  currentEndpointPartIds: string[] = [],
+  currentLocalBoardId?: string,
+) {
   let penalty = 0;
   for (const existing of occupied) {
     const overlap = parallelOverlap(candidate, existing);
-    if (overlap > EPSILON) penalty += 20_000 + overlap * 20;
-    else if (properCrossing(candidate, existing)) penalty += 12_000;
+    // Exact overlap is expensive. A nearby parallel lane is acceptable once it
+    // is roughly one breadboard pitch away, which makes bundles readable while
+    // still allowing compact connector fan-out.
+    if (overlap > EPSILON) {
+      penalty += LANE * 34 + overlap * 7;
+      continue;
+    }
+    const proximity = parallelProximity(candidate, existing);
+    if (proximity && proximity.distance < LANE * 0.82) {
+      // Inside a breadboard, short rail/strip drops should stay direct even when
+      // an external cable happens to run nearby. Exact overlaps and crossings
+      // are still penalized below; only the soft visual-spacing cost is disabled.
+      // A short board-local drop may sit close to another board-local drop, but
+      // it should not hug an ingress/egress cable from outside the board. That
+      // produces two visually merged wires even when their mathematical axes
+      // differ by a pixel or two. Keep one normal lane around non-local runs.
+      const visuallyMergedLocalRun = Boolean(
+        currentLocalBoardId
+        && existing.localBoardId === currentLocalBoardId
+        && proximity.distance < LANE * 0.28,
+      );
+      if (!currentLocalBoardId || existing.localBoardId !== currentLocalBoardId || visuallyMergedLocalRun) {
+        penalty += (LANE * 0.82 - proximity.distance) * 10 + Math.min(proximity.longitudinal, LANE * 10) * 1.5;
+      }
+    } else if (properCrossing(candidate, existing)) {
+      const sharesEndpointPart = existing.endpointPartIds?.some((partId) => currentEndpointPartIds.includes(partId)) ?? false;
+      // Wires leaving the same physical connector bank form a bundle. Let them
+      // spread into neighboring lanes, but strongly discourage them from
+      // swapping order and crossing each other after fan-out. General crossings
+      // stay a soft cost so the router can still escape genuinely constrained scenes.
+      penalty += LANE * (sharesEndpointPart ? 160 : 80);
+    }
   }
   return penalty;
 }
@@ -247,8 +399,8 @@ function buildVisibilityGraph(anchors: WirePoint[], blocked: Rect[], occupied: O
   const occupiedPoints = occupied.flatMap((segment) => [segment.a, segment.b]);
   const baseX = [...anchors.map((point) => point.x), ...blocked.flatMap((rect) => [rect.left, rect.right]), ...occupiedPoints.map((point) => point.x)];
   const baseY = [...anchors.map((point) => point.y), ...blocked.flatMap((rect) => [rect.top, rect.bottom]), ...occupiedPoints.map((point) => point.y)];
-  const xs = uniqueSorted([...baseX, ...baseX.flatMap((value) => [value - LANE, value + LANE])]);
-  const ys = uniqueSorted([...baseY, ...baseY.flatMap((value) => [value - LANE, value + LANE])]);
+  const xs = uniqueSorted([...baseX, ...baseX.flatMap((value) => [value - LANE * 2, value - LANE, value + LANE, value + LANE * 2])]);
+  const ys = uniqueSorted([...baseY, ...baseY.flatMap((value) => [value - LANE * 2, value - LANE, value + LANE, value + LANE * 2])]);
   const points: WirePoint[] = [];
   const indexes = new Map<string, number>();
   for (const y of ys) {
@@ -278,9 +430,7 @@ function buildVisibilityGraph(anchors: WirePoint[], blocked: Rect[], occupied: O
       for (let candidate = index + 1; candidate < line.length; candidate++) {
         const end = points[line[candidate]];
         const length = Math.abs(end.x - start.x) + Math.abs(end.y - start.y);
-        if (length < LANE - EPSILON) continue;
-        connect(line[index], line[candidate]);
-        break;
+        if (connect(line[index], line[candidate])) break;
       }
     }
   };
@@ -297,7 +447,7 @@ function buildVisibilityGraph(anchors: WirePoint[], blocked: Rect[], occupied: O
     const bIndex = indexes.get(pointKey(b));
     if (aIndex === undefined || bIndex === undefined) return;
     const length = Math.abs(a.x - b.x) + Math.abs(a.y - b.y);
-    if (length >= LANE - EPSILON) connect(aIndex, bIndex);
+    if (length > EPSILON) connect(aIndex, bIndex);
   };
   for (let first = 0; first < anchors.length; first++) {
     for (let second = first + 1; second < anchors.length; second++) {
@@ -320,14 +470,45 @@ function routeSegment(
   graph: ReturnType<typeof buildVisibilityGraph>,
   occupied: OccupiedSegment[],
   netId?: string,
+  currentEndpointPartIds: string[] = [],
+  currentLocalBoardId?: string,
 ) {
   if (samePoint(start, goal)) return [start];
   if (axis(start, goal) >= 0
     && segmentClear(start, goal, graph.blocked)
-    && occupancyPenalty({ a: start, b: goal }, occupied, netId) === 0) return [start, goal];
+    && occupancyPenalty({ a: start, b: goal }, occupied, netId, currentEndpointPartIds, currentLocalBoardId) === 0) return [start, goal];
+
+  // Breadboard-local rail/strip drops should look like deliberate human wiring.
+  // Before invoking the global visibility search, try the two monotonic Manhattan
+  // elbows. If either is physically clear and does not overlap/cross an existing
+  // wire, prefer it over a visually pointless dogleg introduced by soft lane costs.
+  if (currentLocalBoardId && axis(start, goal) < 0) {
+    const elbows = [
+      { x: goal.x, y: start.y },
+      { x: start.x, y: goal.y },
+    ];
+    for (const elbow of elbows) {
+      const path = simplifyWirePoints([start, elbow, goal]);
+      if (path.length < 2) continue;
+      const pathSegments = segments(path);
+      if (!pathSegments.every((segment) => segmentClear(segment.a, segment.b, graph.blocked))) continue;
+      const penalty = pathSegments.reduce((sum, segment) => sum + occupancyPenalty(
+        segment,
+        occupied,
+        netId,
+        currentEndpointPartIds,
+        currentLocalBoardId,
+      ), 0);
+      if (penalty === 0) return path;
+    }
+  }
   const startIndex = graph.indexes.get(pointKey(start));
   const goalIndex = graph.indexes.get(pointKey(goal));
-  if (startIndex === undefined || goalIndex === undefined) throw new Error('An exact routing anchor is inside a component clearance rectangle.');
+  if (startIndex === undefined || goalIndex === undefined) {
+    const blockedAnchor = startIndex === undefined ? start : goal;
+    const blocker = graph.blocked.find((rect) => pointInside(blockedAnchor, rect));
+    throw new Error(`An exact routing anchor is inside ${blocker?.partId ?? 'a component'}'s clearance rectangle.`);
+  }
   const heap = new MinHeap();
   const costs = new Map<string, number>();
   const previous = new Map<string, string>();
@@ -355,9 +536,9 @@ function routeSegment(
     for (const edge of graph.adjacency[current.node]) {
       const nextPoint = graph.points[edge.to];
       const direction = travelDirection(currentPoint, nextPoint);
-      if (current.direction >= 0 && (current.direction + 2) % 4 === direction) continue;
+      const reversal = current.direction >= 0 && (current.direction + 2) % 4 === direction ? LANE * 6 : 0;
       const bend = current.direction >= 0 && current.direction % 2 !== direction % 2 ? LANE * 2 : 0;
-      const nextCost = current.cost + edge.length + bend + occupancyPenalty({ a: currentPoint, b: nextPoint }, occupied, netId);
+      const nextCost = current.cost + edge.length + bend + reversal + occupancyPenalty({ a: currentPoint, b: nextPoint }, occupied, netId, currentEndpointPartIds, currentLocalBoardId);
       const nextKey = stateKey(edge.to, direction);
       if (nextCost >= (costs.get(nextKey) ?? Number.POSITIVE_INFINITY)) continue;
       costs.set(nextKey, nextCost);
@@ -371,7 +552,15 @@ function routeSegment(
       });
     }
   }
-  if (!winningKey) throw new Error('No clear exact orthogonal route exists. Move a component or add a sparse corridor checkpoint.');
+  if (!winningKey) {
+    const startDegree = graph.adjacency[startIndex]?.length ?? 0;
+    const goalDegree = graph.adjacency[goalIndex]?.length ?? 0;
+    const seen=new Set<number>([startIndex]),queue=[startIndex];
+    while(queue.length){const node=queue.shift()!;for(const edge of graph.adjacency[node])if(!seen.has(edge.to)){seen.add(edge.to);queue.push(edge.to)}}
+    const componentPoints=[...seen].map(index=>graph.points[index]);
+    const minX=Math.min(...componentPoints.map(p=>p.x)),maxX=Math.max(...componentPoints.map(p=>p.x)),minY=Math.min(...componentPoints.map(p=>p.y)),maxY=Math.max(...componentPoints.map(p=>p.y));
+    throw new Error(`No clear exact orthogonal route exists. start=${pointKey(start)} degree=${startDegree}, goal=${pointKey(goal)} degree=${goalDegree}, undirectedReach=${seen.has(goalIndex)}, component=${seen.size} bounds=${rounded(minX)},${rounded(minY)}..${rounded(maxX)},${rounded(maxY)}, graph=${graph.points.length} points/${graph.adjacency.reduce((n,edges)=>n+edges.length,0)/2} edges, blockers=${graph.blocked.map(r=>r.partId).join(',')}.`);
+  }
   const result: WirePoint[] = [];
   let key: string | undefined = winningKey;
   while (key) {
@@ -382,12 +571,20 @@ function routeSegment(
 }
 
 function reserveConnection(occupied: OccupiedSegment[], connection: CircuitConnection, parts: CircuitPart[]) {
+  const endpointPartIds = Array.from(new Set([connection.from, connection.to]
+    .map((endpoint) => endpointParts(endpoint)?.partId)
+    .filter((partId): partId is string => Boolean(partId))));
+  const fromBoardId = endpointBoardId(connection.from, parts);
+  const toBoardId = endpointBoardId(connection.to, parts);
+  const localBoardId = fromBoardId && fromBoardId === toBoardId ? fromBoardId : undefined;
   const start = endpointPoint(connection.from, parts);
   const end = endpointPoint(connection.to, parts);
   if (!start || !end) return;
   occupied.push(...segments(connectionPolyline(start, connection.waypoints, end)).map((segment) => ({
     ...segment,
     ...(connection.netId ? { netId: connection.netId } : {}),
+    endpointPartIds,
+    ...(localBoardId ? { localBoardId } : {}),
   })));
 }
 
@@ -396,14 +593,24 @@ export function routeWires(
   specs: RoutableWire[],
   parts: CircuitPart[],
   reservedConnections: CircuitConnection[] = [],
-  strategy: 'input' | 'reverse' | 'shortest' | 'longest' = 'shortest',
+  strategy: 'input' | 'reverse' | 'shortest' | 'longest' | 'external-first' = 'shortest',
 ): RoutedWire[] {
   const occupied: OccupiedSegment[] = [];
   for (const connection of reservedConnections) reserveConnection(occupied, connection, parts);
   const prepared = specs.map((spec, index) => {
     const ownsCorridor = Boolean(spec.viaPx?.length || spec.via?.length);
-    const source = endpointLead(spec.from, spec.to, parts, !ownsCorridor);
-    const destination = endpointLead(spec.to, spec.from, parts, !ownsCorridor);
+    const allowAutomaticBoardEscape = !ownsCorridor && !spec.directBoardEntry;
+    const sourceLead = endpointLead(spec.from, spec.to, parts, allowAutomaticBoardEscape);
+    const destinationLead = endpointLead(spec.to, spec.from, parts, allowAutomaticBoardEscape);
+    // A flexible cable with an explicit/compiler-owned corridor already states
+    // how it leaves the terminal. Do not prepend another synthetic escape lane,
+    // or a clean one-corner rail lead turns into a three-bend hook.
+    const source = ownsCorridor && pinIsFlexible(spec.from, parts)
+      ? { pin: sourceLead.pin, escape: sourceLead.pin }
+      : sourceLead;
+    const destination = ownsCorridor && pinIsFlexible(spec.to, parts)
+      ? { pin: destinationLead.pin, escape: destinationLead.pin }
+      : destinationLead;
     const escapedBoardIds = new Set<string>();
     for (const [endpoint, lead] of [[spec.from, source], [spec.to, destination]] as const) {
       const partId = endpointParts(endpoint)?.partId;
@@ -413,10 +620,17 @@ export function routeWires(
     const blocked = obstacles(parts, spec, escapedBoardIds);
     const vias = spec.viaPx ?? (spec.via ?? []).map(blockCellToCanvas);
     for (const via of vias) {
-      if (blocked.some((rect) => pointInside(via, rect))) {
-        throw new Error(`${spec.id ?? `${spec.from}->${spec.to}`} corridor checkpoint is inside a component clearance rectangle.`);
+      const blocker = blocked.find((rect) => pointInside(via, rect));
+      if (blocker) {
+        throw new Error(`${spec.id ?? `${spec.from}->${spec.to}`} corridor checkpoint is inside ${blocker.partId ?? 'a component'}'s clearance rectangle.`);
       }
     }
+    const endpointPartIds = Array.from(new Set([spec.from, spec.to]
+      .map((endpoint) => endpointParts(endpoint)?.partId)
+      .filter((partId): partId is string => Boolean(partId))));
+    const fromBoardId = endpointBoardId(spec.from, parts);
+    const toBoardId = endpointBoardId(spec.to, parts);
+    const localBoardId = fromBoardId && fromBoardId === toBoardId ? fromBoardId : undefined;
     return {
       spec,
       index,
@@ -424,12 +638,63 @@ export function routeWires(
       destination,
       vias,
       blocked,
+      endpointPartIds,
+      localBoardId,
+      ownsCorridor,
       distance: Math.abs(source.escape.x - destination.escape.x) + Math.abs(source.escape.y - destination.escape.y),
     };
   });
+
+  // Wires leaving one rigid connector bank should fan out like a ribbon cable,
+  // not swap lane order immediately outside the header. For automatic
+  // controller-to-breadboard leads, reserve one ordered turn lane in the open
+  // gap before the board. The agent still describes only semantic endpoints;
+  // this checkpoint is deterministic physicalization, not a hand-authored route.
+  type PreparedItem = (typeof prepared)[number];
+  type FanoutMember = { item:PreparedItem; coord:number; movement:-1|1 };
+  const fanoutGroups=new Map<string,FanoutMember[]>();
+  for(const item of prepared){
+    if(item.ownsCorridor)continue;
+    const endpoint=item.spec.from,otherEndpoint=item.spec.to;
+    const parsed=endpointParts(endpoint),part=parts.find(candidate=>candidate.id===parsed?.partId);
+    const direction=pinExitDirection(endpoint,parts),otherBoardId=endpointBoardId(otherEndpoint,parts);
+    if(!parsed||!part||isBreadboardType(part.type)||pinIsFlexible(endpoint,parts)||!direction||!otherBoardId)continue;
+    if(samePoint(item.source.pin,item.source.escape))continue;
+    const other=endpointPoint(otherEndpoint,parts);if(!other)continue;
+    const horizontal=direction==='left'||direction==='right';
+    const coord=horizontal?item.source.pin.y:item.source.pin.x;
+    const otherCoord=horizontal?other.y:other.x;
+    const delta=otherCoord-coord;if(Math.abs(delta)<LANE*.5)continue;
+    const movement: -1|1=delta<0?-1:1;
+    const key=`${part.id}:${direction}:${otherBoardId}:${movement}`;
+    const group=fanoutGroups.get(key)??[];group.push({item,coord,movement});fanoutGroups.set(key,group);
+  }
+  for(const group of fanoutGroups.values()){
+    if(group.length<2)continue;
+    group.sort((a,b)=>a.movement<0?a.coord-b.coord:b.coord-a.coord);
+    for(const [rank,member] of group.entries()){
+      const lead=member.item.source;
+      const direction=pinExitDirection(member.item.spec.from,parts);if(!direction)continue;
+      const laneStart={...lead.escape};
+      const offset=rank*LANE;
+      if(direction==='left')laneStart.x-=offset;
+      else if(direction==='right')laneStart.x+=offset;
+      else if(direction==='up')laneStart.y-=offset;
+      else laneStart.y+=offset;
+      const turn=direction==='left'||direction==='right'
+        ? {x:laneStart.x,y:member.item.destination.escape.y}
+        : {x:member.item.destination.escape.x,y:laneStart.y};
+      if(!segmentClear(lead.pin,laneStart,member.item.blocked)||!segmentClear(laneStart,turn,member.item.blocked))continue;
+      lead.escape=laneStart;
+      if(!samePoint(turn,laneStart)&&!samePoint(turn,member.item.destination.escape))member.item.vias.unshift(turn);
+      member.item.distance=Math.abs(member.item.source.escape.x-member.item.destination.escape.x)+Math.abs(member.item.source.escape.y-member.item.destination.escape.y);
+    }
+  }
+
   if (strategy === 'reverse') prepared.reverse();
   if (strategy === 'shortest') prepared.sort((a, b) => a.distance - b.distance || a.index - b.index);
   if (strategy === 'longest') prepared.sort((a, b) => b.distance - a.distance || a.index - b.index);
+  if (strategy === 'external-first') prepared.sort((a, b) => Number(Boolean(a.localBoardId)) - Number(Boolean(b.localBoardId)) || b.distance - a.distance || a.index - b.index);
   const routed = new Map<number, RoutedWire>();
   for (const item of prepared) {
     const checkpoints = [item.source.escape, ...item.vias, item.destination.escape];
@@ -438,7 +703,7 @@ export function routeWires(
     for (let index = 0; index < checkpoints.length - 1; index++) {
       let routedSegment: WirePoint[];
       try {
-        routedSegment = routeSegment(checkpoints[index], checkpoints[index + 1], graph, occupied, item.spec.netId);
+        routedSegment = routeSegment(checkpoints[index], checkpoints[index + 1], graph, occupied, item.spec.netId, item.endpointPartIds, item.localBoardId);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         const facingHint = facesAway(item.spec.from, item.destination.pin, parts)
@@ -460,6 +725,8 @@ export function routeWires(
     occupied.push(...segments(points).map((segment) => ({
       ...segment,
       ...(item.spec.netId ? { netId: item.spec.netId } : {}),
+      endpointPartIds: item.endpointPartIds,
+      ...(item.localBoardId ? { localBoardId: item.localBoardId } : {}),
     })));
     routed.set(item.index, { ...item.spec, points });
   }

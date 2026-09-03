@@ -11,7 +11,7 @@ type ProgramPart = {
 };
 
 type ProgramWire = { id: string; from: string; to: string; role?: string; color?: string; via?: [number, number][] };
-type ProgramNet = { id: string; role?: string; endpoints: string[] };
+type ProgramNet = { id: string; role?: string; endpoints: string[]; color?: string };
 export type ProgramRail = { id: string; breadboardId: string; rail: string; source: string; consumers: string[] };
 export type ProgramRailBridge = { id: string; breadboardId: string; polarity: '+' | '-'; side: 'left' | 'right' };
 type ProgramAlignment = { from: string; to: string; axis: 'x' | 'y' };
@@ -168,10 +168,12 @@ export function parseCircuitProgram(program: string) {
     }
     if (call.name === 'net') {
       if (!Array.isArray(third)) throw new Error(`program line ${call.line} net endpoints must be an array.`);
+      const color = call.args[3] === undefined ? undefined : requireString(call.args[3], `program line ${call.line} net color`);
       nets.push({
         id: requireId(first, `program line ${call.line} net id`),
         ...(second !== undefined ? { role: requireString(second, `program line ${call.line} role`) } : {}),
         endpoints: third.map((value) => endpoint(value, `program line ${call.line} endpoint`)),
+        ...(color ? { color } : {}),
       });
       continue;
     }

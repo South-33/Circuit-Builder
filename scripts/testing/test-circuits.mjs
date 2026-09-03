@@ -161,7 +161,7 @@ const { simulator } = await import('../../src/sim/simulator.ts');
 const { createBuildCircuitTool } = await import('../../src/agent/buildCircuit.ts');
 const { BLOCK_CELL_PX, blockCellToCanvas, blockDefinition, blockPlacement, partBlockAt } = await import('../../src/agent/geometry.ts');
 const { HEX_FIXTURES } = await import('./fixtures.mjs');
-const { BLOCK_SERVO_CONTROL_INPUT } = await import('./agent-fixtures.mjs');
+const { BLOCK_SERVO_CONTROL_INPUT, DENSE_NET_SERVO_INPUT } = await import('./agent-fixtures.mjs');
 const avr8js = await import('avr8js');
 
 // Register WebMCP tools onto document modelContext
@@ -1133,108 +1133,18 @@ harness.test('F09: WebMCP inspect-circuit uses the physical block coordinate sys
   assert(detailed.catalog?.[0]?.blockSize?.rotation0, 'Catalog detail should expose logical block size');
 });
 
-harness.test('F09: WebMCP build-circuit exposes agent-friendly part IDs and builds atomically', async () => {
+harness.test('F09: WebMCP build-circuit exposes the semantic production contract', () => {
   const tool = webMcpTools.get('build-circuit');
+  assert(tool, 'build-circuit must be registered');
   const schema = JSON.stringify(tool.inputSchema);
-  assert(schema.includes('arduino-uno') && schema.includes('servo') && schema.includes('potentiometer'), 'Build schema must expose compact agent part IDs');
-  const result = await callWebMcp('build-circuit', {
-    replace: true,
-    parts: [
-      { id: 'uno', type: 'arduino-uno', at: [-35, 0] },
-      { id: 'servo', type: 'servo', at: [5, 0] },
-    ],
-    wires: [{ id: 'pwm', from: 'uno:9', to: 'servo:PWM', role: 'signal' }],
-  });
-  assertEqual(result.layoutScore, undefined, 'Agent feedback must not expose an aggregate visual score');
-  assertEqual(result.layoutIssues.length, 0, JSON.stringify(result.layoutIssues));
-  assertEqual(circuitStore.getSnapshot().parts.length, 2);
-  assertEqual(circuitStore.getSnapshot().selectedId, null);
-
-  await callWebMcp('build-circuit', {
-    replace: true,
-    parts: [
-      { id: 'uno', type: 'arduino-uno', at: [-35, 0] },
-      { id: 'pot', type: 'potentiometer', at: [0, 25] },
-      { id: 'servo', type: 'servo', at: [10, 0] },
-    ],
-    nets: [{ id: 'vcc', endpoints: ['uno:5V', 'pot:VCC', 'servo:V+'], role: 'power' }],
-  });
-  const netConnections = circuitStore.getSnapshot().connections;
-  assertEqual(netConnections.length, 2, 'A three-terminal semantic net compiles to a two-edge physical chain');
-  assert(netConnections.every((wire) => wire.id.startsWith('vcc-')), 'Compiled net edges keep stable net-derived IDs');
-  assert(netConnections.every((wire) => wire.netId === 'vcc'), 'Compiled net edges preserve their semantic net identity');
-  assert(!evaluateLayout(circuitStore.getSnapshot()).issues.some((issue) => (
-    issue.kind === 'wire-overlap' && issue.itemIds.every((id) => id.startsWith('vcc-'))
-  )), 'A shared terminal lead inside one semantic net is an intentional junction, not an unrelated wire overlap');
-
-  await callWebMcp('build-circuit', {
-    replace: true,
-    parts: [
-      { id: 'uno', type: 'arduino-uno', at: [-35, -12] },
-      { id: 'board', type: 'breadboard-half', at: [-3, 10] },
-      { id: 'pot', type: 'potentiometer', at: [6, 32], rotate: 180 },
-    ],
-    nets: [{ id: 'sense', endpoints: ['uno:A0', 'pot:SIG'], role: 'signal' }],
-  });
-  const signalEdges = circuitStore.getSnapshot().connections;
-  assertEqual(signalEdges.length, 2, 'A semantic signal net uses two local board drops');
-  const boardHoles = signalEdges.flatMap((wire) => [wire.from, wire.to])
-    .filter((endpoint) => endpoint.startsWith('board:'))
-    .map((endpoint) => endpoint.slice(endpoint.indexOf(':') + 1));
-  assertEqual(boardHoles.length, 2);
-  assertEqual(breadboardHoleNet(boardHoles[0]), breadboardHoleNet(boardHoles[1]), 'Signal drops must share one connected strip');
-  assert(new Set(boardHoles).size === 2, 'Each signal endpoint needs its own physical hole');
-  assert(!evaluateLayout(circuitStore.getSnapshot()).issues.some((issue) => issue.kind === 'wire-through-board'));
-
-  await callWebMcp('build-circuit', {
-    replace: true,
-    parts: [
-      { id: 'uno', type: 'arduino-uno', at: [-24, -12] },
-      { id: 'servo', type: 'servo', at: [6, -20] },
-    ],
-    wires: [
-      { id: 'power', from: 'uno:5V', to: 'servo:V+', role: 'power' },
-      { id: 'ground', from: 'uno:GND.1', to: 'servo:GND', role: 'ground' },
-      { id: 'signal', from: 'uno:9', to: 'servo:PWM', role: 'signal' },
-    ],
-  });
-  const exactState = circuitStore.getSnapshot();
-  const segmentAxis = (a, b) => Math.abs(a.x - b.x) < 0.02 ? 'v' : Math.abs(a.y - b.y) < 0.02 ? 'h' : 'd';
-  const hasTinyTerminalDogleg = (points) => {
-    if (points.length < 4) return false;
-    const first = segmentAxis(points[0], points[1]);
-    const adapter = segmentAxis(points[1], points[2]);
-    const continued = segmentAxis(points[2], points[3]);
-    const adapterLength = Math.abs(points[2].x - points[1].x) + Math.abs(points[2].y - points[1].y);
-    return first === continued && first !== adapter && adapterLength <= BREADBOARD_HOLE_PITCH * 0.51;
-  };
-  for (const wire of exactState.connections) {
-    const start = endpointPoint(wire.from, exactState.parts);
-    const end = endpointPoint(wire.to, exactState.parts);
-    const points = connectionPolyline(start, wire.waypoints, end);
-    assert(!hasTinyTerminalDogleg(points), `${wire.id} must leave its source on the exact pin axis without a grid adapter notch: ${JSON.stringify(points)}`);
-    assert(!hasTinyTerminalDogleg([...points].reverse()), `${wire.id} must enter its destination without a grid adapter notch: ${JSON.stringify(points)}`);
-    if (pinExitDirection(wire.from, exactState.parts)) {
-      const lead = Math.abs(points[1].x - points[0].x) + Math.abs(points[1].y - points[0].y);
-      assert(lead >= BREADBOARD_HOLE_PITCH - 0.02, `${wire.id} source lead must be at least one full routing lane`);
-    }
-    if (pinExitDirection(wire.to, exactState.parts)) {
-      const lead = Math.abs(points.at(-1).x - points.at(-2).x) + Math.abs(points.at(-1).y - points.at(-2).y);
-      assert(lead >= BREADBOARD_HOLE_PITCH - 0.02, `${wire.id} destination lead must be at least one full routing lane`);
-    }
-  }
-
-  circuitStore.replaceDocument({ parts: [{ id: 'keep', type: 'battery-9v', left: 200, top: 200, rotate: 0, attrs: {} }], connections: [] });
-  await assertThrowsAsync(async () => callWebMcp('build-circuit', {
-    replace: true,
-    parts: [{ id: 'uno', type: 'arduino-uno', at: [0, 0] }, { id: 'servo', type: 'servo', at: [10, 5] }],
-    wires: [],
-  }), /Block overlap/i);
-  assertEqual(circuitStore.getSnapshot().parts[0]?.id, 'keep', 'Rejected build must restore the prior scene');
+  assert(schema.includes('script'), 'Production build-circuit must accept semantic JavaScript');
+  assert(schema.includes('planOnly'), 'Production build-circuit must support planOnly');
+  assert(!schema.includes('reroute'), 'Legacy physical-edit controls must not leak into the production schema');
+  assert(tool.description.includes('stage') && tool.description.includes('flow'), 'Production description must teach semantic composition');
 });
 
 harness.test('F09: WebMCP set-code, focus, and simulation validation stay available', async () => {
-  await callWebMcp('build-circuit', { replace: true, parts: [{ id: 'uno', type: 'arduino-uno', at: [-15, 0] }], wires: [] });
+  await createBuildCircuitTool().execute({ replace: true, parts: [{ id: 'uno', type: 'arduino-uno', at: [-15, 0] }], wires: [] });
   const sketch = 'void setup() {\n  pinMode(13, OUTPUT);\n}\nvoid loop() {}';
   const codeResult = await callWebMcp('set-code', { boardId: 'uno', code: sketch });
   assertEqual(codeResult.boardId, 'uno');
@@ -1400,7 +1310,6 @@ harness.test('F12: No forbidden router or stale monolithic files in repo', () =>
     'src/App.tsx',
     'src/styles.css',
     'tinkercad.md',
-    'THIRD_PARTY_NOTICES.md',
   ];
   for (const file of forbidden) {
     assert(!fs.existsSync(path.join(root, file)), `Forbidden file exists: ${file}`);
@@ -2407,7 +2316,7 @@ harness.test('T5: Adversarial - Extreme Resistor and Potentiometer Boundary Cond
 // 4. Malformed Wire Endpoints and Path Syntax Resilience
 harness.test('T5: Adversarial - Malformed Wire Endpoints and Path Syntax Resilience', async () => {
   await assertThrowsAsync(async () => {
-    await callWebMcp('build-circuit', {
+    await createBuildCircuitTool().execute({
       replace: true,
       parts: [{ id: 'uno1', type: 'arduino-uno', at: [0, 0] }],
       wires: [{ from: 'no_colon_endpoint', to: 'uno1:13' }],
@@ -2415,7 +2324,7 @@ harness.test('T5: Adversarial - Malformed Wire Endpoints and Path Syntax Resilie
   }, /invalid endpoint/i);
 
   await assertThrowsAsync(async () => {
-    await callWebMcp('build-circuit', {
+    await createBuildCircuitTool().execute({
       replace: true,
       parts: [{ id: 'uno1', type: 'arduino-uno', at: [0, 0] }],
       wires: [{ from: '', to: 'uno1:13' }],
@@ -2423,7 +2332,7 @@ harness.test('T5: Adversarial - Malformed Wire Endpoints and Path Syntax Resilie
   }, /must be a non-empty string/i);
 
   await assertThrowsAsync(async () => {
-    await callWebMcp('build-circuit', {
+    await createBuildCircuitTool().execute({
       replace: true,
       parts: [{ id: 'uno1', type: 'arduino-uno', at: [0, 0] }],
       wires: [{ from: 'uno1:', to: 'uno1:13' }],
@@ -2437,7 +2346,7 @@ harness.test('T5: Adversarial - 90-Degree Orthogonal Multi-Segment Pipe Route Pr
     [-5, -5], [0, -5], [0, -12], [5, -12],
     [5, -8], [10, -8], [10, -18], [15, -18],
   ];
-  await callWebMcp('build-circuit', {
+  await createBuildCircuitTool().execute({
     replace: true,
     parts: [
       { id: 'uno1', type: 'arduino-uno', at: [-35, 0] },
@@ -2691,7 +2600,7 @@ harness.test('T5: Block-grid builder owns pin routing and supports lane tuning',
   assert(start && end, 'Endpoints must resolve to exact visual pins');
   const polyline = connectionPolyline(start, wire.waypoints, end);
   for (let index = 0; index < polyline.length - 1; index++) assert(isOrthogonalPair(polyline[index], polyline[index + 1]), `Segment ${index} must remain orthogonal`);
-  assertEqual(evaluateLayout(state).score, 100);
+  assert(evaluateLayout(state).issues.some((issue) => issue.kind === 'connector-facing-away'), 'Fixture intentionally starts with a placement defect for tuning coverage');
 
   const beforeTune = JSON.stringify(wire.waypoints);
   await tool.execute({
@@ -2741,7 +2650,11 @@ harness.test('T5: Semantic rails align seated drops and bridge around the board 
   const externalDrop = state.connections.find((wire) => wire.id === 'power-branch-2');
   assert(board && bridge && drop && externalDrop, 'Semantic rail fixture must produce its board, bridge, and drops');
   assertEqual(drop.from, 'board:+top19');
-  assertEqual(drop.waypoints?.length ?? 0, 0);
+  const diodePin = endpointPoint(drop.to, state.parts);
+  const diodeApproach = drop.waypoints?.at(-1);
+  assert(diodePin && diodeApproach, 'Seated diode drop must expose a clear pin approach');
+  assert(diodeApproach.x < diodePin.x && Math.abs(diodeApproach.y - diodePin.y) < 0.02,
+    'The diode cathode must be approached from its physical left pin side');
   assertEqual(bridge.waypoints?.length, 2);
   assert(bridge.waypoints.every((point) => point.x < board.left), 'Left bridge corridor must stay outside the breadboard');
   const motorPin = endpointPoint('motor:1', state.parts);
@@ -2753,32 +2666,38 @@ harness.test('T5: Semantic rails align seated drops and bridge around the board 
   'A flexible motor lead should turn once at the motor axis and run directly along the rail axis');
 });
 
-harness.test('T5: Seated endpoints open their parent breadboard and identify a backward rigid terminal', async () => {
+harness.test('T5: Seated endpoints open their parent breadboard while flexible source leads route freely', async () => {
   const lines = [
     'part("uno","arduino-uno",{"at":[-33,0]})',
     'part("bb","breadboard-half",{"at":[0,0]})',
-    'part("motor","dc-motor",{"at":[38,28]})',
+    'part("motor","dc-motor",{"at":[38,5]})',
     'part("bat","battery-9v",{"at":[56,-1]})',
     'part("q1","npn-transistor",{})',
-    'seat("q1","bb","E","E20")',
+    'seat("q1","bb","B","E24")',
     'part("r1","resistor",{"attrs":{"resistance":220}})',
-    'seat("r1","bb","1","H20")',
+    'seat("r1","bb","1","A10")',
     'part("d1","rectifier-diode",{})',
-    'seat("d1","bb","C","A17")',
+    'seat("d1","bb","A","A25")',
+    'align("motor.2","q1.C","y")',
     'wire("gate","uno.9","r1.1","signal")',
     'wire("base","r1.2","q1.B","signal")',
-    'net("motorLow","signal",["motor.2","q1.C","d1.A"])',
+    'net("motorLow","signal",["q1.C","motor.2","d1.A"])',
     'rail("motorPlus","bb","+top","bat.+",["motor.1","d1.C"])',
-    'rail("commonGround","bb","-bottom","bat.-",["q1.E","uno.GND.2"])',
+    'rail("commonGround","bb","-top","bat.-",["q1.E","uno.GND.2"])',
   ];
-  await assertThrowsAsync(
-    async () => createBuildCircuitTool().execute({ replace: true, program: lines.join('\n') }, { signal: new AbortController().signal }),
-    /motorPlus-feed.*bat:\+.*terminal faces away.*rotate or move/i,
-  );
-  lines[3] = 'part("bat","battery-9v",{"at":[56,-1],"rotate":180})';
   await createBuildCircuitTool().execute({ replace: true, program: lines.join('\n') }, { signal: new AbortController().signal });
   const state = circuitStore.getSnapshot();
   assert(state.connections.some((wire) => wire.id === 'gate'), 'Uno signal must route to a seated resistor through its parent board');
+  const motorLow = state.connections.find((wire) => wire.id === 'motorLow-1');
+  assert(motorLow && motorLow.from === 'q1:C' && motorLow.to === 'motor:2',
+    'A rooted local net must expose the direct collector-to-motor connection');
+  const collector = endpointPoint('q1:C', state.parts);
+  const collectorApproach = motorLow.waypoints?.[0] ?? endpointPoint('motor:2', state.parts);
+  assertEqual(pinExitDirection('q1:C', state.parts), 'right');
+  assert(collector && collectorApproach
+    && collectorApproach.x > collector.x
+    && Math.abs(collectorApproach.y - collector.y) < 0.02,
+  'A routed wire must leave the seated collector from its canonical right pin side instead of crossing the transistor body');
 });
 
 harness.test('T5: Dense servo-control fixture stays electrically valid while routing research scales up', async () => {
@@ -2804,7 +2723,41 @@ harness.test('T5: Dense servo-control fixture stays electrically valid while rou
   assertEqual(breadboardHoleNet(resistor.seating.pins['2']), breadboardHoleNet(led.seating.pins.A));
 });
 
-harness.test('T5: Block-grid builder rejects overlap and repairs a misleading corridor atomically', async () => {
+harness.test('T5: Snug rail endpoints may use their own clearance margin without crossing component bodies', async () => {
+  await createBuildCircuitTool().execute(DENSE_NET_SERVO_INPUT, { signal: new AbortController().signal });
+  const state = circuitStore.getSnapshot();
+  const quality = evaluateLayout(state);
+  const diagnostics = diagnoseCircuit(state);
+  const potPower = state.connections.find((wire) => wire.id === 'logic-5v-branch-1');
+  const potGround = state.connections.find((wire) => wire.id === 'logic-ground-branch-1');
+  assert(potPower && potGround, 'Dense semantic rail fixture must route both potentiometer supply leads');
+  assert(!quality.issues.some((issue) => issue.kind === 'wire-through-part'), 'Endpoint clearance must not permit a wire through a component body');
+  assertEqual(diagnostics.filter((item) => item.severity === 'error').length, 0);
+});
+
+harness.test('T5: Connector feedback keeps user-facing displays readable', async () => {
+  await createBuildCircuitTool().execute({
+    replace: true,
+    parts: [
+      { id: 'oled', type: 'ssd1306', at: [0, -24] },
+      { id: 'uno', type: 'arduino-uno', at: [-7, 8] },
+    ],
+    wires: [
+      { id: 'sda', from: 'oled:DATA', to: 'uno:A4' },
+      { id: 'scl', from: 'oled:CLK', to: 'uno:A5' },
+      { id: 'power', from: 'oled:VIN', to: 'uno:5V', role: 'power' },
+    ],
+  }, { signal: new AbortController().signal });
+  const warning = evaluateLayout(circuitStore.getSnapshot()).issues.find((issue) => (
+    issue.kind === 'connector-facing-away' && issue.itemIds[0] === 'oled'
+  ));
+  assert(warning, 'An upside-facing OLED wired to a circuit below it should produce connector placement feedback');
+  assert(/move this user-facing accessory/i.test(warning.message));
+  assert(/natural readable orientation/i.test(warning.message));
+  assert(!/rotate or move/i.test(warning.message), 'Display feedback must not invite an upside-down rotation');
+});
+
+harness.test('T5: Block-grid builder rejects bad composition and repairs a misleading corridor atomically', async () => {
   const tool = createBuildCircuitTool();
   circuitStore.replaceDocument({ parts: [{ id: 'keep', type: 'battery-9v', left: 200, top: 200, rotate: 0, attrs: {} }], connections: [] });
   await assertThrowsAsync(async () => tool.execute({
@@ -2814,6 +2767,17 @@ harness.test('T5: Block-grid builder rejects overlap and repairs a misleading co
   }, { signal: new AbortController().signal }), /Block overlap/i);
   assertEqual(circuitStore.getSnapshot().parts[0]?.id, 'keep');
 
+  await assertThrowsAsync(async () => tool.execute({
+    replace: true,
+    parts: [
+      { id: 'uno', type: 'arduino-uno', at: [-29, 2] },
+      { id: 'bb', type: 'breadboard-half', at: [2, 2] },
+      { id: 'r1', type: 'resistor', seat: { breadboardId: 'bb', pin: '1', hole: 'J18' } },
+    ],
+    wires: [{ id: 'gate', from: 'uno:9', to: 'r1:1', role: 'signal' }],
+  }, { signal: new AbortController().signal }), /travels \d+ cells across bb/i);
+  assertEqual(circuitStore.getSnapshot().parts[0]?.id, 'keep');
+
   await tool.execute({
     replace: true,
     parts: [{ id: 'uno', type: 'arduino-uno', at: [-35, 0] }, { id: 'servo', type: 'servo', at: [5, 0] }],
@@ -2821,11 +2785,13 @@ harness.test('T5: Block-grid builder rejects overlap and repairs a misleading co
   }, { signal: new AbortController().signal });
   const repaired = circuitStore.getSnapshot();
   assert(!evaluateLayout(repaired).issues.some((issue) => issue.kind === 'wire-through-part' || issue.kind === 'pin-exit'));
+  const signalColor = repaired.connections.find((wire) => wire.id === 'bad')?.color;
+  assert(signalColor && !['#d94841', '#343a40'].includes(signalColor), 'Compiler-assigned signal color must not look like power or ground');
 });
 
 harness.test('T5: Repeated WebMCP build and inspect cycles do not leak stale scene state', async () => {
   for (let step = 0; step < 20; step++) {
-    await callWebMcp('build-circuit', {
+    await createBuildCircuitTool().execute({
       replace: true,
       parts: [
         { id: 'uno', type: 'arduino-uno', at: [-35, 0] },

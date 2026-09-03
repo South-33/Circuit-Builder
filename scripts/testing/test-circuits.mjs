@@ -1121,6 +1121,7 @@ harness.test('F09: WebMCP inspect-circuit uses the physical block coordinate sys
   circuitStore.replaceDocument({ parts: [
     { id: 'uno1', type: 'wokwi-arduino-uno', ...blockPlacement('wokwi-arduino-uno', { x: -35, y: 0 }), attrs: {}, code: 'void setup(){}' },
     { id: 'led1', type: 'wokwi-led', ...blockPlacement('wokwi-led', { x: 5, y: 0 }), attrs: { color: 'red' } },
+    { id: 'board', type: 'breadboard', ...blockPlacement('breadboard', { x: 20, y: 0 }), attrs: {} },
   ], connections: [] });
   const basic = await callWebMcp('inspect-circuit');
   assertEqual(basic.coordinateSystem.cellPixels, BREADBOARD_HOLE_PITCH);
@@ -1133,14 +1134,16 @@ harness.test('F09: WebMCP inspect-circuit uses the physical block coordinate sys
   assert(detailed.catalog?.[0]?.blockSize?.rotation0, 'Catalog detail should expose logical block size');
 });
 
-harness.test('F09: WebMCP build-circuit exposes the semantic production contract', () => {
+harness.test('F09: WebMCP build-circuit exposes the direct scene contract', () => {
   const tool = webMcpTools.get('build-circuit');
   assert(tool, 'build-circuit must be registered');
   const schema = JSON.stringify(tool.inputSchema);
-  assert(schema.includes('script'), 'Production build-circuit must accept semantic JavaScript');
-  assert(schema.includes('planOnly'), 'Production build-circuit must support planOnly');
+  assert(schema.includes('script'), 'Production build-circuit must accept scene JavaScript');
+  assert(!schema.includes('planOnly'), 'Production build-circuit must not expose semantic planning');
   assert(!schema.includes('reroute'), 'Legacy physical-edit controls must not leak into the production schema');
-  assert(tool.description.includes('stage') && tool.description.includes('flow'), 'Production description must teach semantic composition');
+  assert(tool.description.includes('wire('), 'Production description must teach explicit wire paths');
+  assert(tool.description.includes('x(endpoint)') && tool.description.includes('y(endpoint)'), 'Production description must teach symbolic endpoint axes');
+  assert(tool.description.includes('no auto-router'), 'Production description must make model-owned routing explicit');
 });
 
 harness.test('F09: WebMCP set-code, focus, and simulation validation stay available', async () => {

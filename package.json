@@ -2,7 +2,7 @@
   "name": "circuit-builder",
   "private": true,
   "version": "0.1.0",
-  "description": "WebMCP electronics workbench with semantic circuit construction and Arduino simulation.",
+  "description": "WebMCP electronics workbench with direct circuit scene construction and Arduino simulation.",
   "license": "MIT",
   "repository": "https://github.com/South-33/Circuit-Builder",
   "packageManager": "pnpm@10.26.2",

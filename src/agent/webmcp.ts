@@ -3,12 +3,13 @@ import { getPartPins, PART_DEFINITIONS } from '../components/parts';
 import { circuitStore } from '../circuit/store';
 import type { FocusState } from '../circuit/types';
 import { evaluateLayout } from '../layout/quality';
+import { CANVAS_CENTER_X, CANVAS_CENTER_Y } from '../layout/placement';
 import { buildCircuitGraph, directlyConnectedNodes } from '../sim/circuitGraph';
 import { diagnoseCircuit } from '../sim/diagnostics';
 import { simulator } from '../sim/simulator';
 import { WIRING_GUIDE } from '../wires/conventions';
 import { endpointPoint, partRect, pinExitDirection } from '../wires/geometry';
-import { createSemanticCircuitTool } from './semanticCircuit';
+import { createSceneBuildCircuitTool } from './rawSceneScript';
 import { BLOCK_UNITS_PER_CELL, blockDefinition, blockPlacement, partBlockAt } from './geometry';
 import { agentPartType, agentPartTypeEnum, canonicalEndpoint, requirePartType, requireString } from './input';
 import { toolResult } from './protocol';
@@ -18,13 +19,14 @@ declare global {
   interface Window {
     __hardwareLabWebMcpController?: AbortController;
     __webmcp_tools__?: ToolDefinition[];
+    __webmcp_benchmark_reset__?: () => void;
     webmcp_list_tools?: () => Array<{ name: string; description: string; inputSchema?: Record<string, unknown> }>;
     webmcp_call_tool?: (name: string, input?: Record<string, unknown>) => Promise<unknown>;
     modelContext?: ModelContext;
   }
 }
 
-function catalogEntry(requestedType: string, index: number) {
+function catalogEntry(requestedType: string, index: number, includePins = false) {
   const type = requirePartType(requestedType, `catalogTypes[${index}]`);
   const definition = PART_DEFINITIONS[type];
   const block = blockDefinition(type, 0);
@@ -41,6 +43,7 @@ function catalogEntry(requestedType: string, index: number) {
     name: definition.name,
     breadboardMount: definition.breadboardMount === true,
     pinSummary: definition.pinSummary,
+    defaults: definition.defaults,
     blockSize: {
       rotation0: { w: block.w, h: block.h },
       rotation90: (() => { const block = blockDefinition(type, 90); return { w: block.w, h: block.h }; })(),
@@ -55,14 +58,15 @@ function catalogEntry(requestedType: string, index: number) {
         rails: ['-top', '+top', '-bottom', '+bottom'],
       },
     } : {}),
-    pins: getPartPins(temp).map((pin) => ({
-      name: pin.name,
-      exit: pinExitDirection(`${temp.id}:${pin.name}`, [temp]),
-      blockOffset: block.pins[pin.name]?.at,
-      edgeOffset: block.pins[pin.name]?.edgeOffset,
-      unitAt: block.pins[pin.name]?.unitAt,
-      edgeUnit: block.pins[pin.name]?.edgeUnit,
-    })),
+    ...(breadboard ? {
+      pinGeometry: 'Named breadboard holes follow the regular hole grid. Request exact global positions with pinEndpoints after placement instead of dumping every hole.',
+    } : includePins ? {
+      pins: getPartPins(temp).map((pin) => ({
+        name: pin.name,
+        exit: pinExitDirection(`${temp.id}:${pin.name}`, [temp]),
+        unitAt: block.pins[pin.name]?.unitAt,
+      })),
+    } : {}),
   };
 }
 
@@ -90,7 +94,12 @@ function inspectCircuit(input: Record<string, unknown>) {
   const catalogTypes = Array.isArray(input.catalogTypes)
     ? input.catalogTypes.map((value) => requireString(value, 'catalogType'))
     : [];
-
+  const catalogPinTypes = new Set(Array.isArray(input.catalogPinTypes)
+    ? input.catalogPinTypes.map((value) => requireString(value, 'catalogPinType'))
+    : []);
+  const pinEndpoints = Array.isArray(input.pinEndpoints)
+    ? input.pinEndpoints.map((value) => canonicalEndpoint(value, state.parts))
+    : [];
   const includePins = input.includePins === true;
   const includeCode = input.includeCode === true;
   const includeLayout = input.includeLayout === true;
@@ -102,7 +111,7 @@ function inspectCircuit(input: Record<string, unknown>) {
       agentUnitsPerCell: BLOCK_UNITS_PER_CELL,
       componentCoordinate: 'block top-left cell',
     },
-    availablePartTypes: agentPartTypeEnum,
+    ...(input.includePartTypes === true ? { availablePartTypes: agentPartTypeEnum } : {}),
     parts: parts.map((part) => {
       const block = blockDefinition(part.type, part.rotate ?? 0);
       return {
@@ -115,14 +124,23 @@ function inspectCircuit(input: Record<string, unknown>) {
         ...(part.seating ? { seating: part.seating } : {}),
         ...(includeCode && part.code !== undefined ? { code: part.code } : {}),
         ...(includePins && (!pinFilter.size || pinFilter.has(part.id)) ? {
-          pins: getPartPins(part).map((pin) => ({
-            name: pin.name,
-            exit: pinExitDirection(`${part.id}:${pin.name}`, state.parts),
-            blockOffset: block.pins[pin.name]?.at,
-            edgeOffset: block.pins[pin.name]?.edgeOffset,
-            unitAt: block.pins[pin.name]?.unitAt,
-            edgeUnit: block.pins[pin.name]?.edgeUnit,
-          })),
+            pins: getPartPins(part).map((pin) => {
+              const point = endpointPoint(`${part.id}:${pin.name}`, state.parts);
+              return {
+                name: pin.name,
+                exit: pinExitDirection(`${part.id}:${pin.name}`, state.parts),
+                blockOffset: block.pins[pin.name]?.at,
+                edgeOffset: block.pins[pin.name]?.edgeOffset,
+                unitAt: block.pins[pin.name]?.unitAt,
+                edgeUnit: block.pins[pin.name]?.edgeUnit,
+                ...(point ? {
+                  globalUnitAt: [
+                    Math.round(((point.x - CANVAS_CENTER_X) / (BREADBOARD_HOLE_PITCH / BLOCK_UNITS_PER_CELL)) * 1000) / 1000,
+                    Math.round(((point.y - CANVAS_CENTER_Y) / (BREADBOARD_HOLE_PITCH / BLOCK_UNITS_PER_CELL)) * 1000) / 1000,
+                  ],
+                } : {}),
+              };
+            }),
         } : {}),
       };
     }),
@@ -132,11 +150,26 @@ function inspectCircuit(input: Record<string, unknown>) {
       from: wire.from,
       to: wire.to,
       color: wire.color,
-      fromPx: endpointPoint(wire.from, state.parts),
-      toPx: endpointPoint(wire.to, state.parts),
-      ...(wire.waypoints?.length ? { routePx: wire.waypoints } : {}),
+      ...(wire.waypoints?.length ? {
+        points: wire.waypoints.map((point) => [
+          Math.round(((point.x - CANVAS_CENTER_X) / (BREADBOARD_HOLE_PITCH / BLOCK_UNITS_PER_CELL)) * 10) / 10,
+          Math.round(((point.y - CANVAS_CENTER_Y) / (BREADBOARD_HOLE_PITCH / BLOCK_UNITS_PER_CELL)) * 10) / 10,
+        ]),
+      } : {}),
     })),
     ...(netTrace ? { net: { root: input.netOf, connectedNodes: netTrace } } : {}),
+    ...(pinEndpoints.length ? {
+      pinEndpoints: pinEndpoints.map((endpoint) => {
+        const point = endpointPoint(endpoint, state.parts)!;
+        return {
+          endpoint,
+          globalUnitAt: [
+            Math.round(((point.x - CANVAS_CENTER_X) / (BREADBOARD_HOLE_PITCH / BLOCK_UNITS_PER_CELL)) * 10) / 10,
+            Math.round(((point.y - CANVAS_CENTER_Y) / (BREADBOARD_HOLE_PITCH / BLOCK_UNITS_PER_CELL)) * 10) / 10,
+          ],
+        };
+      }),
+    } : {}),
     diagnostics: diagnoseCircuit(state),
     layoutQuality: evaluateLayout(state),
     simulation: {
@@ -144,7 +177,7 @@ function inspectCircuit(input: Record<string, unknown>) {
       ...(state.simulation.error ? { error: state.simulation.error } : {}),
       ...(state.simulation.serialOutput ? { serialOutput: state.simulation.serialOutput } : {}),
     },
-    ...(catalogTypes.length ? { catalog: catalogTypes.map(catalogEntry) } : {}),
+    ...(catalogTypes.length ? { catalog: catalogTypes.map((type, index) => catalogEntry(type, index, catalogPinTypes.has(type))) } : {}),
     ...(input.includeGuidance === true ? { wiringGuide: WIRING_GUIDE } : {}),
     ...(includeLayout ? {
       layout: {
@@ -163,7 +196,7 @@ function commonTools(): ToolDefinition[] {
   return [
     {
       name: 'inspect-circuit',
-      description: 'Read exact circuit state, diagnostics, nets, code, and optional physical layout. Use build-circuit for semantic construction; request catalogTypes only when exact component pin details are needed.',
+      description: 'Read circuit state, diagnostics, selected pin coordinates, code, and optional layout. Keep requests narrow. Use catalogTypes only for components you need to learn, and pinEndpoints only for endpoints you are about to route.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -171,9 +204,12 @@ function commonTools(): ToolDefinition[] {
           netOf: { type: 'string' },
           includePins: { type: 'boolean' },
           pinPartIds: { type: 'array', items: { type: 'string' } },
+          pinEndpoints: { type: 'array', items: { type: 'string' }, description: 'Return exact global fine-grid coordinates for only these endpoints, e.g. ["uno:5","board:+top30","motor:1"].' },
+          includePartTypes: { type: 'boolean', description: 'Return the full supported part-type list. Usually unnecessary if you already know the component names.' },
           includeCode: { type: 'boolean' },
           includeLayout: { type: 'boolean' },
           catalogTypes: { type: 'array', items: { type: 'string', enum: agentPartTypeEnum } },
+          catalogPinTypes: { type: 'array', items: { type: 'string', enum: agentPartTypeEnum }, description: 'Only for catalogTypes whose exact local pin offsets are actually needed.' },
           includeGuidance: { type: 'boolean' },
         },
       },
@@ -182,7 +218,7 @@ function commonTools(): ToolDefinition[] {
         return toolResult(inspectCircuit(input));
       },
     },
-    createSemanticCircuitTool(),
+    createSceneBuildCircuitTool(),
     {
       name: 'set-code',
       description: 'Replace the complete Arduino sketch on an Arduino Uno.',
@@ -313,6 +349,10 @@ export async function registerWebMCPTools() {
     const tool = findTool(name);
     if (!tool) throw new Error(`WebMCP tool "${name}" not found.`);
     return tool.execute(input, options);
+  };
+  window.__webmcp_benchmark_reset__ = () => {
+    simulator.stop();
+    circuitStore.replaceDocument({ parts: [], connections: [] });
   };
 
   const existingDocContext = (document as Document & { modelContext?: ModelContext }).modelContext;

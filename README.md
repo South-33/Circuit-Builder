@@ -4,11 +4,11 @@ A WebMCP electronics workbench where a person and an agent edit the same live ci
 
 ## Why WebMCP
 
-The browser exposes one production construction tool, `build-circuit`. The agent describes topology and functional intent. Deterministic code turns that intent into valid breadboard seats, power rails, junctions, orthogonal wiring, diagnostics, and a runnable simulation.
+The browser exposes one production construction tool, `build-circuit`. The agent edits the literal 2D circuit scene: component placement, breadboard seating, and visible orthogonal wire paths. Deterministic code resolves component geometry and validates electrical and physical correctness, but it does not choose the layout or route wires for the agent.
 
 Supporting tools let the agent inspect exact circuit state, update Arduino code, focus parts or pins, and observe simulation results. The WebMCP registration is in [`src/agent/webmcp.ts`](./src/agent/webmcp.ts).
 
-Typical loop: `Plan -> Build -> inspect -> revise -> Verify`.
+Typical loop: `Build rough scene -> render -> inspect -> revise -> verify`.
 
 ## Run
 

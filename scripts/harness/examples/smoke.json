@@ -3,7 +3,7 @@
   "calls": [
     {
       "input": {
-        "script": "const uno = part(\"uno\", \"arduino-uno\");\nconst r = part(\"r\", \"resistor\", { value: 220 });\nconst led = part(\"led\", \"led\", { color: \"red\" });\nconnect(uno.pin(\"9\"), r.pin(\"1\"), { id: \"drive\", role: \"signal\" });\nconnect(r.pin(\"2\"), led.pin(\"A\"), { id: \"ledNode\", role: \"signal\" });\nground(uno.pin(\"GND.1\"), led.pin(\"C\"));"
+        "script": "const uno = part('uno', 'arduino-uno', [-30, -10]);\nconst r = part('r', 'resistor', [4, -4], 0, { value: '220' });\nconst led = part('led', 'led', [14, -4], 0, { color: 'red' });\nwire('drive', uno.pin('9'), r.pin('1'), 'green', [[x(uno.pin('9')), -130], [x(r.pin('1')), -130]]);\nwire('led-feed', r.pin('2'), led.pin('A'), 'green', [[x(r.pin('2')), -80], [x(led.pin('A')), -80]]);\nwire('ground', uno.pin('GND.2'), led.pin('C'), 'black', [[x(uno.pin('GND.2')), 130], [x(led.pin('C')), 130]]);"
       },
       "tool": "build-circuit"
     }

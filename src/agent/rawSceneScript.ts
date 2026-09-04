@@ -133,6 +133,32 @@ function opInput(op: SceneOp): Record<string, unknown> {
   }
 }
 
+function isWireOp(op: SceneOp): op is Extract<SceneOp, { kind: 'wire' | 'wireH' | 'wireV' }> {
+  return op.kind === 'wire' || op.kind === 'wireH' || op.kind === 'wireV';
+}
+
+function isPartOp(op: SceneOp): op is Extract<SceneOp, { kind: 'part' | 'seat' }> {
+  return op.kind === 'part' || op.kind === 'seat';
+}
+
+function mergePartInputs(ops: Array<Extract<SceneOp, { kind: 'part' | 'seat' }>>) {
+  return {
+    parts: ops.flatMap((op) => {
+      const input = opInput(op);
+      return Array.isArray(input.parts) ? input.parts : [];
+    }),
+  };
+}
+
+function mergeWireInputs(ops: Array<Extract<SceneOp, { kind: 'wire' | 'wireH' | 'wireV' }>>) {
+  return {
+    wires: ops.flatMap((op) => {
+      const input = opInput(op);
+      return Array.isArray(input.wires) ? input.wires : [];
+    }),
+  };
+}
+
 export function createSceneBuildCircuitTool(): ToolDefinition {
   return {
     name: 'build-circuit',
@@ -180,7 +206,38 @@ wireV('battery', 'bat:+', 'board:+top26', 'red', 'board:+top26');`,
       const ops = await runSceneScript(script);
       const before = structuredClone(circuitStore.getSnapshot());
       try {
-        for (const op of ops) await rawTool.execute(opInput(op), options);
+        let partBatch: Array<Extract<SceneOp, { kind: 'part' | 'seat' }>> = [];
+        let wireBatch: Array<Extract<SceneOp, { kind: 'wire' | 'wireH' | 'wireV' }>> = [];
+        const flushParts = async () => {
+          if (!partBatch.length) return;
+          const batch = partBatch;
+          partBatch = [];
+          await rawTool.execute(mergePartInputs(batch), options);
+        };
+        const flushWires = async () => {
+          if (!wireBatch.length) return;
+          const batch = wireBatch;
+          wireBatch = [];
+          await rawTool.execute(mergeWireInputs(batch), options);
+        };
+
+        for (const op of ops) {
+          if (isPartOp(op)) {
+            await flushWires();
+            partBatch.push(op);
+            continue;
+          }
+          if (isWireOp(op)) {
+            await flushParts();
+            wireBatch.push(op);
+            continue;
+          }
+          await flushParts();
+          await flushWires();
+          await rawTool.execute(opInput(op), options);
+        }
+        await flushParts();
+        await flushWires();
       } catch (error) {
         circuitStore.replaceDocument({ parts: before.parts, connections: before.connections });
         throw error;

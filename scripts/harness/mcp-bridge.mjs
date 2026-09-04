@@ -184,7 +184,7 @@ async function listTools() {
   const tools = browserTools.filter((tool) => productionNames.has(tool.name));
   tools.push({
     name: 'render-circuit',
-    description: 'Render the current workbench exactly as the user sees it. Use this after meaningful edits and visually inspect the image before deciding the next change.',
+    description: 'Render the current circuit canvas using the real workbench pixels but without app controls. Use this after meaningful edits and visually inspect the image before deciding the next change.',
     inputSchema: { type: 'object', properties: {} },
   });
   return tools;
@@ -192,7 +192,27 @@ async function listTools() {
 
 async function renderCircuit() {
   await new Promise((resolve) => setTimeout(resolve, 250));
-  const screenshot = await cdp.call('Page.captureScreenshot', { format: 'png', fromSurface: true });
+  await cdp.evaluate(`(() => {
+    const style = document.createElement('style');
+    style.id = 'webmcp-benchmark-render-cleanup';
+    style.textContent = '.inspector-card,.canvas-tools{display:none!important}';
+    document.head.appendChild(style);
+  })()`);
+  const viewport = await cdp.evaluate(`(() => {
+    const rect = document.querySelector('.canvas-viewport')?.getBoundingClientRect();
+    if (!rect || rect.width <= 0 || rect.height <= 0) return null;
+    return { x: Math.max(0, rect.left), y: Math.max(0, rect.top), width: rect.width, height: rect.height };
+  })()`);
+  let screenshot;
+  try {
+    screenshot = await cdp.call('Page.captureScreenshot', {
+      format: 'png',
+      fromSurface: true,
+      ...(viewport ? { clip: { ...viewport, scale: 1 } } : {}),
+    });
+  } finally {
+    await cdp.evaluate(`document.getElementById('webmcp-benchmark-render-cleanup')?.remove()`);
+  }
   renderIndex += 1;
   const filename = `render-${String(renderIndex).padStart(2, '0')}.png`;
   fs.writeFileSync(path.join(outputDir, filename), Buffer.from(screenshot.data, 'base64'));

@@ -1132,6 +1132,12 @@ harness.test('F09: WebMCP inspect-circuit uses the physical block coordinate sys
   assertEqual(detailed.parts.find((part) => part.id === 'uno1')?.blockAt.x, -35);
   assert(detailed.parts.find((part) => part.id === 'led1')?.pins?.length === 2);
   assert(detailed.catalog?.[0]?.blockSize?.rotation0, 'Catalog detail should expose logical block size');
+
+  const breadboardPins = await callWebMcp('inspect-circuit', { includePins: true, partIds: ['board', 'led1'] });
+  const inspectedBoard = breadboardPins.parts.find((part) => part.id === 'board');
+  assert(!inspectedBoard?.pins, 'includePins must not dump the full breadboard hole lattice');
+  assert(inspectedBoard?.pinGeometry?.includes('symbolic'), 'Breadboard inspection should explain symbolic hole access');
+  assertEqual(breadboardPins.parts.find((part) => part.id === 'led1')?.pins?.length, 2);
 });
 
 harness.test('F09: WebMCP build-circuit exposes the direct scene contract', () => {
@@ -1144,6 +1150,7 @@ harness.test('F09: WebMCP build-circuit exposes the direct scene contract', () =
   assert(tool.description.includes('wire('), 'Production description must teach explicit wire paths');
   assert(tool.description.includes('x(endpoint)') && tool.description.includes('y(endpoint)'), 'Production description must teach symbolic endpoint axes');
   assert(tool.description.includes('no auto-router'), 'Production description must make model-owned routing explicit');
+  assert(tool.description.includes('TOP-LEFT') && tool.description.includes('not the center'), 'Production description must make placement coordinates unambiguous');
 });
 
 harness.test('F09: WebMCP set-code, focus, and simulation validation stay available', async () => {

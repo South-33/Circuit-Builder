@@ -228,27 +228,37 @@ function compactInspectResult(input, data) {
 
   if (Array.isArray(data.parts)) {
     const requestedIds = Array.isArray(input.partIds) ? new Set(input.partIds) : null;
-    if (requestedIds?.size || input.includeCode) {
-      out.parts = requestedIds?.size ? data.parts.filter((part) => requestedIds.has(part.id)) : data.parts;
-    } else if (input.includePins) {
+    if (input.includePins) {
       // A blind `includePins:true` request used to dump every breadboard hole.
       // Keep it useful for discovering ordinary component pins, but force
       // breadboard geometry to stay symbolic (A20, +top12, etc.).
-      out.parts = data.parts
-        .filter((part) => !String(part.type ?? '').startsWith('breadboard'))
+      const selected = requestedIds?.size
+        ? data.parts.filter((part) => requestedIds.has(part.id))
+        : data.parts;
+      out.parts = selected
         .map((part) => ({
           id: part.id,
           type: part.type,
+          ...(part.blockAt ? { blockAt: part.blockAt } : {}),
+          ...(part.blockSize ? { blockSize: part.blockSize } : {}),
+          ...(part.rotate ? { rotate: part.rotate } : {}),
+          ...(part.seating ? { seating: part.seating } : {}),
+          ...(part.pinGeometry ? { pinGeometry: part.pinGeometry } : {}),
           pins: Array.isArray(part.pins)
             ? part.pins.map((pin) => ({
                 name: pin.name,
                 ...(pin.exit ? { exit: pin.exit } : {}),
                 ...(pin.globalUnitAt ? { globalUnitAt: pin.globalUnitAt } : {}),
               }))
-            : [],
+            : undefined,
+          ...(input.includeCode && part.code !== undefined ? { code: part.code } : {}),
         }));
-      out.breadboardPinsOmitted = true;
-      out.hint = 'Breadboard holes are regular symbolic endpoints such as board:A20, board:J20, board:+top20, and board:-bottom20. Request specific holes with pinEndpoints only when numeric coordinates are truly needed.';
+      if (selected.some((part) => String(part.type ?? '').startsWith('breadboard'))) {
+        out.breadboardPinsOmitted = true;
+        out.hint = 'Breadboard holes are regular symbolic endpoints such as board:A20, board:J20, board:+top20, and board:-bottom20. Request specific holes with pinEndpoints only when numeric coordinates are truly needed.';
+      }
+    } else if (requestedIds?.size || input.includeCode) {
+      out.parts = requestedIds?.size ? data.parts.filter((part) => requestedIds.has(part.id)) : data.parts;
     } else if (!focused) {
       out.parts = data.parts.map((part) => ({
         id: part.id,
@@ -279,29 +289,65 @@ function compactInspectResult(input, data) {
   return out;
 }
 
+function normalizeToolArgs(name, args) {
+  let value = args;
+  for (let depth = 0; depth < 3; depth += 1) {
+    if (typeof value === 'string') {
+      const text = value.trim();
+      if (!text) return {};
+      try {
+        value = JSON.parse(text);
+        continue;
+      } catch {
+        return name === 'build-circuit' ? { script: text } : {};
+      }
+    }
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+    const keys = Object.keys(value);
+    if (keys.length === 1 && ['Arguments', 'arguments', 'input', 'args'].includes(keys[0])) {
+      value = value[keys[0]];
+      continue;
+    }
+    return value;
+  }
+  return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+}
+
 async function callTool(name, args) {
   const startedAt = performance.now();
   let result;
+  const normalizedArgs = normalizeToolArgs(name, args);
   const toolArgs = name === 'inspect-circuit'
-    ? { ...(args ?? {}), includeGuidance: false }
-    : (args ?? {});
-  if (name === 'render-circuit') {
-    result = await renderCircuit();
-  } else {
-    const tools = await listTools();
-    if (!tools.some((tool) => tool.name === name)) throw new Error(`Tool is not available: ${name}`);
-    if (!constructionStarted && name === 'build-circuit') {
-      await blankBench();
-      constructionStarted = true;
+    ? { ...normalizedArgs, includeGuidance: false }
+    : normalizedArgs;
+  try {
+    if (name === 'render-circuit') {
+      result = await renderCircuit();
+    } else {
+      const tools = await listTools();
+      if (!tools.some((tool) => tool.name === name)) throw new Error(`Tool is not available: ${name}`);
+      if (!constructionStarted && name === 'build-circuit') {
+        await blankBench();
+        constructionStarted = true;
+      }
+      result = await browserTool(name, toolArgs);
+      if (name === 'inspect-circuit') {
+        const compact = compactInspectResult(toolArgs, result?.structuredContent ?? result);
+        result = {
+          content: [{ type: 'text', text: JSON.stringify(compact) }],
+          structuredContent: compact,
+        };
+      }
     }
-    result = await browserTool(name, toolArgs);
-    if (name === 'inspect-circuit') {
-      const compact = compactInspectResult(toolArgs, result?.structuredContent ?? result);
-      result = {
-        content: [{ type: 'text', text: JSON.stringify(compact) }],
-        structuredContent: compact,
-      };
-    }
+  } catch (error) {
+    fs.appendFileSync(callsPath, `${JSON.stringify({
+      at: new Date().toISOString(),
+      tool: name,
+      input: toolArgs,
+      durationMs: Math.round((performance.now() - startedAt) * 10) / 10,
+      error: error instanceof Error ? error.message : String(error),
+    })}\n`);
+    throw error;
   }
   fs.appendFileSync(callsPath, `${JSON.stringify({
     at: new Date().toISOString(),

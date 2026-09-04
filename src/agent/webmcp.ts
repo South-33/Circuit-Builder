@@ -123,7 +123,9 @@ function inspectCircuit(input: Record<string, unknown>) {
         ...(part.attrs && Object.keys(part.attrs).length ? { attrs: part.attrs } : {}),
         ...(part.seating ? { seating: part.seating } : {}),
         ...(includeCode && part.code !== undefined ? { code: part.code } : {}),
-        ...(includePins && (!pinFilter.size || pinFilter.has(part.id)) ? {
+        ...(includePins && (!pinFilter.size || pinFilter.has(part.id)) && isBreadboardType(part.type) ? {
+          pinGeometry: 'Breadboard holes stay symbolic (for example A20, J20, +top20, -bottom20). Use pinEndpoints for exact global coordinates instead of requesting every hole.',
+        } : includePins && (!pinFilter.size || pinFilter.has(part.id)) ? {
             pins: getPartPins(part).map((pin) => {
               const point = endpointPoint(`${part.id}:${pin.name}`, state.parts);
               return {
@@ -196,13 +198,13 @@ function commonTools(): ToolDefinition[] {
   return [
     {
       name: 'inspect-circuit',
-      description: 'Read circuit state, diagnostics, selected pin coordinates, code, and optional layout. Keep requests narrow. Use catalogTypes only for components you need to learn, and pinEndpoints only for endpoints you are about to route.',
+      description: 'Read circuit state, diagnostics, selected pin coordinates, code, and optional layout. Keep requests narrow. Breadboard holes remain symbolic even with includePins; use pinEndpoints for only the exact holes you are about to route. Use catalogTypes only for components you need to learn.',
       inputSchema: {
         type: 'object',
         properties: {
           partIds: { type: 'array', items: { type: 'string' } },
           netOf: { type: 'string' },
-          includePins: { type: 'boolean' },
+          includePins: { type: 'boolean', description: 'Return component pin geometry. Full breadboard hole lattices are intentionally omitted; use symbolic hole names or pinEndpoints instead.' },
           pinPartIds: { type: 'array', items: { type: 'string' } },
           pinEndpoints: { type: 'array', items: { type: 'string' }, description: 'Return exact global fine-grid coordinates for only these endpoints, e.g. ["uno:5","board:+top30","motor:1"].' },
           includePartTypes: { type: 'boolean', description: 'Return the full supported part-type list. Usually unnecessary if you already know the component names.' },

@@ -1,0 +1,13 @@
+{
+  "name": "shared-bus-hard",
+  "calls": [
+    {
+      "tool": "build-circuit",
+      "input": {
+        "script": "const left=part('left','arduino-uno',[-60,-14],90);\npart('board','breadboard',[-33,-10]);\nconst right=part('right','arduino-uno',[38,-14],270);\nseat('dipL','dip-switch-8','board','1a','F12');\nseat('dipR','dip-switch-8','board','1a','F42');\nconst colors=['purple','blue','turquoise','green','yellow','orange','red','gray'];\nfor(let i=0;i<8;i++){\n const pin=String(i+2), lcol=12+i, rcol=42+i, color=colors[i];\n const l=`board:G${lcol}`, r=`board:G${rcol}`;\n wire(`D${i}-left`,left.pin(pin),l,color,[[x(l),y(left.pin(pin))]]);\n const busL=`board:I${lcol}`, busR=`board:I${rcol}`, busY=72+i*4;\n wire(`D${i}-bus`,busL,busR,color,[[x(busL),busY],[x(busR),busY]]);\n wire(`D${i}-right`,right.pin(pin),r,color,[[x(r),y(right.pin(pin))]]);\n const gl=`board:A${lcol}`, gr=`board:A${rcol}`;\n const railL=`board:-top${8+i}`, railR=`board:-top${34+i}`;\n const gyL=-88-i*3, gyR=-88-i*3;\n wire(`G${i}-left`,gl,railL,'black',[[x(gl),gyL],[x(railL),gyL]]);\n wire(`G${i}-right`,gr,railR,'black',[[x(gr),gyR],[x(railR),gyR]]);\n}\nwire('left-ground',left.pin('GND.1'),'board:-top2','black',[[x('board:-top2'),y(left.pin('GND.1'))]]);\nwire('right-ground',right.pin('GND.1'),'board:-top48','black',[[x('board:-top48'),y(right.pin('GND.1'))]]);"
+      }
+    },
+    {"tool":"inspect-circuit","input":{"netOf":"left:2"}},
+    {"tool":"inspect-circuit","input":{"netOf":"left:9"}}
+  ]
+}

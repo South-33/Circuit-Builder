@@ -65,7 +65,7 @@ const harnessExamples = fs.readdirSync(harnessExampleDir, { withFileTypes: true 
   .filter((entry) => entry.isFile())
   .map((entry) => entry.name)
   .sort();
-if (harnessExamples.join(',') !== 'ir-motor-hard.json,smoke.json') fail(`Unexpected harness examples: ${harnessExamples.join(', ') || '(none)'}`);
+if (harnessExamples.join(',') !== 'ir-motor-hard.json,shared-bus-hard.json,smoke.json') fail(`Unexpected harness examples: ${harnessExamples.join(', ') || '(none)'}`);
 const scriptRootFiles = fs.readdirSync(path.join(root, 'scripts'), { withFileTypes: true }).filter((entry) => entry.isFile());
 if (scriptRootFiles.length) fail(`scripts/ root should contain only organized subdirectories; found: ${scriptRootFiles.map((entry) => entry.name).join(', ')}`);
 
